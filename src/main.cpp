@@ -23,12 +23,13 @@ extern uint8_t *framebuffers[IMAGE_BATCH_SIZE];
 extern size_t fb_lengths[IMAGE_BATCH_SIZE];
 extern int image_count;
 
-// FIX: Modified sleep function to avoid camera re-initialization crashes.
+// FIX: Reverting to the stable sleep function that manages the BLE lifecycle
+// around the sleep cycle, not within the main loop.
 void enter_light_sleep(int sleep_time_seconds)
 {
   Serial.printf("Entering light sleep for %d seconds.\n", sleep_time_seconds);
 
-  // 1. Power down peripherals that are safe to restart
+  // 1. Power down peripherals
   stop_bluetooth();
   display.displayOff(); // Turning off display also powers down camera on this board
 
@@ -41,10 +42,10 @@ void enter_light_sleep(int sleep_time_seconds)
   // --- WAKE UP ---
   Serial.println("Woke up from light sleep.");
 
-  // 4. Re-initialize powered-down peripherals
+  // 4. Re-initialize peripherals
   display.displayOn();
   init_display();
-  start_bluetooth();
+  start_bluetooth(); // Restart BLE to be ready for connections/commands
   update_display(0, "System Ready", true);
 }
 
@@ -102,6 +103,7 @@ void load_settings()
                 deep_sleep_seconds, storage_threshold_percent);
 }
 
+// FIX: This function now works again because BLE is active during the loop.
 void apply_new_settings()
 {
   Serial.printf("Applying new settings: '%s'\n", pending_config_str);
@@ -153,7 +155,7 @@ void setup()
   init_display();
   load_settings();
   init_camera();
-  start_bluetooth();
+  start_bluetooth(); // Start BLE on initial boot.
 
   update_display(0, "System Ready", true);
   Serial.println("System initialized and running. Waiting for first capture interval.");
@@ -162,6 +164,7 @@ void setup()
 // --- LOOP: Main program cycle ---
 void loop()
 {
+  // Check for settings first, as BLE is guaranteed to be on.
   if (new_config_received)
   {
     apply_new_settings();
@@ -178,7 +181,6 @@ void loop()
     Serial.println("Failed to store image. Check PSRAM or batch size limit.");
   }
 
-  // Revert to lower frequency for idle monitoring
   setCpuFrequencyMhz(80);
   Serial.printf("CPU Freq returned to %d MHz\n", getCpuFrequencyMhz());
 
@@ -241,9 +243,6 @@ void loop()
 
     if (transfer_attempted)
     {
-      // FIX: Add a delay to allow the BLE stack to transmit the final chunks
-      // before we free the memory buffers they point to. This prevents a race
-      // condition where the buffer is freed before the BLE task can send it.
       Serial.println("Waiting for BLE TX buffer to clear...");
       delay(500);
       clear_image_buffers();
