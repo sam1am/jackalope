@@ -1,6 +1,7 @@
 #include "globals.h"
 #include "display_handler.h"
 #include "esp_heap_caps.h"
+#include <cstring>
 
 // --- GLOBAL OBJECTS & VARIABLE DEFINITIONS ---
 SSD1306 display(0x3c, I2C_SDA, I2C_SCL, GEOMETRY_128_64);
@@ -14,8 +15,8 @@ float storage_threshold_percent = 5.0;
 volatile bool client_connected = false;
 volatile bool next_chunk_requested = false;
 volatile bool transfer_acknowledged = false;
-volatile bool new_config_received = false; // FIX: Flag to signal new settings
-char pending_config_str[64];               // FIX: Buffer for settings string
+volatile bool new_config_received = false;
+char pending_config_str[64];
 
 // Forward declaration from bluetooth_handler.cpp, where these are defined
 extern uint8_t *framebuffers[IMAGE_BATCH_SIZE];
@@ -76,39 +77,38 @@ void load_settings()
                 deep_sleep_seconds, storage_threshold_percent);
 }
 
-// FIX: New function to safely process settings from the main loop
+// FIX: Replaced the buggy strtok parser with a simple, robust manual parser.
+// This new function iterates through the string and extracts values directly,
+// avoiding the infinite loop issue.
 void apply_new_settings()
 {
-  Serial.printf("Applying new settings from main loop: %s\n", pending_config_str);
+  Serial.printf("Applying new settings: '%s'\n", pending_config_str);
 
-  // Create a mutable copy for strtok
-  char buffer[sizeof(pending_config_str)];
-  strcpy(buffer, pending_config_str);
-
-  // Tokenize the string by the comma delimiter
-  char *token = strtok(buffer, ",");
-  while (token != NULL)
+  // Find the 'F:' part for Frequency
+  char *f_part = strstr(pending_config_str, "F:");
+  if (f_part)
   {
-    if (token[0] == 'F')
+    int new_freq = atoi(f_part + 2); // Get integer after "F:"
+    if (new_freq > 0)
     {
-      int new_freq = atoi(token + 2); // Skip "F:"
-      if (new_freq > 0)
-      {
-        deep_sleep_seconds = new_freq;
-      }
+      deep_sleep_seconds = new_freq;
+      Serial.printf("Parsed Frequency: %d\n", new_freq);
     }
-    else if (token[0] == 'T')
-    {
-      float new_thresh = atof(token + 2); // Skip "T:"
-      if (new_thresh >= 10 && new_thresh <= 95)
-      {
-        storage_threshold_percent = new_thresh;
-      }
-    }
-    token = strtok(NULL, ",");
   }
 
-  // Save the updated values to non-volatile storage for persistence
+  // Find the 'T:' part for Threshold
+  char *t_part = strstr(pending_config_str, "T:");
+  if (t_part)
+  {
+    float new_thresh = atof(t_part + 2); // Get float after "T:"
+    if (new_thresh >= 10 && new_thresh <= 95)
+    {
+      storage_threshold_percent = new_thresh;
+      Serial.printf("Parsed Threshold: %.1f\n", new_thresh);
+    }
+  }
+
+  // Save the (now correctly parsed) values to non-volatile storage
   preferences.begin("settings", false);
   preferences.putInt("sleep_sec", deep_sleep_seconds);
   preferences.putFloat("storage_pct", storage_threshold_percent);
@@ -117,7 +117,7 @@ void apply_new_settings()
   Serial.printf("Settings saved and applied: Interval=%ds, Threshold=%.1f%%\n", deep_sleep_seconds, storage_threshold_percent);
   update_display(4, "Settings Saved!", true);
   delay(1500);
-  update_display(4, "", true); // Clear the message
+  update_display(4, "", true);
 
   new_config_received = false; // Reset the flag
 }
@@ -140,24 +140,20 @@ void setup()
 // --- LOOP: Main program cycle ---
 void loop()
 {
-  // 0. Check if there are new settings to apply.
   if (new_config_received)
   {
     apply_new_settings();
   }
 
-  // 1. Wait for the specified interval. This uses the global variable that can be changed on-the-fly.
   Serial.printf("Waiting for %d seconds...\n", deep_sleep_seconds);
   delay(deep_sleep_seconds * 1000);
 
-  // 2. Capture an image.
   Serial.println("Capture interval elapsed. Taking picture...");
   if (!store_image_in_psram())
   {
     Serial.println("Failed to store image. Check PSRAM or batch size limit.");
   }
 
-  // 3. Check PSRAM usage and update status
   size_t total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
   size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   float used_percentage = total_psram > 0 ? (1.0 - ((float)free_psram / total_psram)) * 100.0 : 0;
@@ -167,14 +163,12 @@ void loop()
   Serial.println(status_buf);
   update_display(1, status_buf, true);
 
-  // Also notify the server of the current status if it's connected
   if (client_connected && pStatusCharacteristic != NULL)
   {
     pStatusCharacteristic->setValue(status_buf);
     pStatusCharacteristic->notify();
   }
 
-  // 4. Decide whether to transfer the batch
   bool should_transfer = (image_count > 0 && (used_percentage >= storage_threshold_percent || image_count >= IMAGE_BATCH_SIZE));
 
   if (should_transfer)
@@ -197,7 +191,7 @@ void loop()
 
       uint32_t start_time = millis();
       while (!client_connected && (millis() - start_time < 30000))
-      { // 30 second timeout
+      {
         delay(100);
       }
 
@@ -220,6 +214,6 @@ void loop()
       clear_image_buffers();
     }
 
-    update_display(2, "", true); // Clear the status line after the attempt
+    update_display(2, "", true);
   }
 }

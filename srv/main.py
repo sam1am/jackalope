@@ -217,7 +217,6 @@ async def ble_communication_task():
 
                         server_state["status"] = "Ready. Waiting for device data..."
                         while client.is_connected:
-                            # This loop now runs un-blocked, allowing settings to be sent anytime.
                             if pending_config_command:
                                 print(
                                     f"Sending config command: {pending_config_command}")
@@ -275,11 +274,21 @@ def get_settings(): return jsonify(server_state["settings"])
 def set_settings():
     global pending_config_command
     data = request.get_json()
-    if not data or 'frequency' not in data or 'threshold' not in data:
+    if not data:
         return jsonify({"error": "Invalid data"}), 400
 
-    freq = int(data['frequency'])
-    thresh = int(data['threshold'])
+    try:
+        freq = int(data['frequency'])
+        thresh = int(data['threshold'])
+    except (ValueError, TypeError, KeyError):
+        return jsonify({"error": "Invalid or missing frequency/threshold"}), 400
+
+    # FIX: Added server-side validation for the inputs
+    if not (freq >= 5):
+        return jsonify({"error": "Frequency must be 5 seconds or greater."}), 400
+    if not (10 <= thresh <= 95):
+        return jsonify({"error": "Threshold must be between 10% and 95%."}), 400
+
     server_state["settings"]["frequency"] = freq
     server_state["settings"]["threshold"] = thresh
     pending_config_command = f"F:{freq},T:{thresh}"

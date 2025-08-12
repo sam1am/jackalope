@@ -25,41 +25,10 @@ Project Structure:
     |-- .gitignore
     |-- captures.db
     |-- imgs
-        |-- 2025-08-12_12-00-32-052249.jpg
-        |-- 2025-08-12_12-00-35-678699.jpg
-        |-- 2025-08-12_12-00-39-668785.jpg
-        |-- 2025-08-12_12-00-43-687061.jpg
-        |-- 2025-08-12_12-00-48-306592.jpg
-        |-- 2025-08-12_12-00-52-478963.jpg
-        |-- 2025-08-12_12-00-56-767797.jpg
-        |-- 2025-08-12_12-01-01-302113.jpg
-        |-- 2025-08-12_12-01-05-140303.jpg
-        |-- 2025-08-12_12-01-09-041226.jpg
-        |-- 2025-08-12_12-01-12-997856.jpg
-        |-- 2025-08-12_12-01-17-498697.jpg
-        |-- 2025-08-12_12-01-21-642105.jpg
-        |-- 2025-08-12_12-01-25-783130.jpg
-        |-- 2025-08-12_12-02-36-045857.jpg
-        |-- 2025-08-12_12-02-39-944720.jpg
-        |-- 2025-08-12_12-02-44-294736.jpg
-        |-- 2025-08-12_12-02-48-736106.jpg
-        |-- 2025-08-12_12-02-53-387956.jpg
-        |-- 2025-08-12_12-02-57-944395.jpg
-        |-- 2025-08-12_12-03-02-388142.jpg
-        |-- 2025-08-12_12-03-06-735758.jpg
-        |-- 2025-08-12_12-03-11-174765.jpg
-        |-- 2025-08-12_12-03-15-318974.jpg
-        |-- 2025-08-12_12-03-20-144226.jpg
-        |-- 2025-08-12_12-03-24-225321.jpg
-        |-- 2025-08-12_12-03-28-395708.jpg
-        |-- 2025-08-12_12-06-07-097225.jpg
-        |-- 2025-08-12_12-06-10-846824.jpg
-        |-- 2025-08-12_12-06-15-315699.jpg
-        |-- 2025-08-12_12-06-19-396110.jpg
-        |-- 2025-08-12_12-06-44-503344.jpg
-        |-- 2025-08-12_12-06-49-156859.jpg
-        |-- 2025-08-12_12-06-53-714563.jpg
-        |-- 2025-08-12_12-06-58-250799.jpg
+        |-- 2025-08-12_12-16-02-887293.jpg
+        |-- 2025-08-12_12-16-06-787718.jpg
+        |-- 2025-08-12_12-16-11-083469.jpg
+        |-- 2025-08-12_12-16-15-907894.jpg
     |-- main.py
     |-- reqs.txt
     |-- static
@@ -85,7 +54,7 @@ Project Structure:
 #include <Preferences.h>
 
 // --- PROTOCOL & BATCH CONFIGURATION ---
-#define CHUNK_SIZE 512      // The missing definition
+#define CHUNK_SIZE 512
 #define IMAGE_BATCH_SIZE 20 // Maximum number of images we can buffer in PSRAM
 #ifndef BLE_DEVICE_NAME
 #define BLE_DEVICE_NAME "T-Camera-BLE-Batch"
@@ -131,7 +100,9 @@ extern BLECharacteristic *pStatusCharacteristic;
 extern volatile bool client_connected;
 extern volatile bool next_chunk_requested;
 extern volatile bool transfer_acknowledged;
+extern volatile bool new_config_received; // FIX: Flag for main loop to process settings
 extern int image_count;
+extern char pending_config_str[64]; // FIX: Buffer to hold incoming settings
 
 // --- FUNCTION PROTOTYPES ---
 void init_display();
@@ -142,6 +113,7 @@ void start_bluetooth();
 void send_batched_data();
 bool store_image_in_psram();
 void load_settings();
+void apply_new_settings(); // FIX: New function to safely apply settings
 void clear_image_buffers();
 
 #endif // GLOBALS_H
@@ -197,54 +169,19 @@ BLECharacteristic *pCommandCharacteristic = NULL;
 BLECharacteristic *pConfigCharacteristic = NULL;
 
 // --- Callback for handling settings changes from the server ---
+// FIX: This callback is now fast and non-blocking. It only copies the data
+// and sets a flag for the main loop to handle the actual processing.
 class ConfigCallbacks : public BLECharacteristicCallbacks
 {
     void onWrite(BLECharacteristic *pCharacteristic)
     {
         std::string value = pCharacteristic->getValue();
-        if (value.length() > 0)
+        // Check length to avoid buffer overflow
+        if (value.length() > 0 && value.length() < sizeof(pending_config_str))
         {
-            Serial.printf("Received new config string: %s\n", value.c_str());
-
-            // Create a mutable buffer for strtok
-            char buffer[value.length() + 1];
-            strcpy(buffer, value.c_str());
-
-            // Tokenize the string by the comma delimiter
-            char *token = strtok(buffer, ",");
-            while (token != NULL)
-            {
-                // Check the first character to identify the setting
-                if (token[0] == 'F')
-                {
-                    int new_freq = atoi(token + 2); // Skip "F:"
-                    if (new_freq > 0)
-                    {
-                        deep_sleep_seconds = new_freq;
-                        Serial.printf("Parsed Frequency: %d\n", new_freq);
-                    }
-                }
-                else if (token[0] == 'T')
-                {
-                    float new_thresh = atof(token + 2); // Skip "T:"
-                    if (new_thresh >= 10 && new_thresh <= 95)
-                    {
-                        storage_threshold_percent = new_thresh;
-                        Serial.printf("Parsed Threshold: %.1f\n", new_thresh);
-                    }
-                }
-                token = strtok(NULL, ",");
-            }
-
-            // Save the updated values to non-volatile storage for persistence across reboots
-            preferences.begin("settings", false);
-            preferences.putInt("sleep_sec", deep_sleep_seconds);
-            preferences.putFloat("storage_pct", storage_threshold_percent);
-            preferences.end();
-
-            Serial.printf("Settings saved and applied: Interval=%ds, Threshold=%.1f%%\n", deep_sleep_seconds, storage_threshold_percent);
-            update_display(4, "Settings Saved!", true);
-            delay(1500);
+            strcpy(pending_config_str, value.c_str());
+            new_config_received = true; // Signal the main loop
+            Serial.printf("Queued new settings for processing: %s\n", value.c_str());
         }
     }
 };
@@ -320,7 +257,7 @@ void start_bluetooth()
 
     pConfigCharacteristic = pService->createCharacteristic(
         CHARACTERISTIC_UUID_CONFIG,
-        BLECharacteristic::PROPERTY_WRITE);
+        BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
     pConfigCharacteristic->setCallbacks(new ConfigCallbacks());
 
     pService->start();
@@ -487,6 +424,8 @@ float storage_threshold_percent = 5.0;
 volatile bool client_connected = false;
 volatile bool next_chunk_requested = false;
 volatile bool transfer_acknowledged = false;
+volatile bool new_config_received = false; // FIX: Flag to signal new settings
+char pending_config_str[64];               // FIX: Buffer for settings string
 
 // Forward declaration from bluetooth_handler.cpp, where these are defined
 extern uint8_t *framebuffers[IMAGE_BATCH_SIZE];
@@ -547,6 +486,52 @@ void load_settings()
                 deep_sleep_seconds, storage_threshold_percent);
 }
 
+// FIX: New function to safely process settings from the main loop
+void apply_new_settings()
+{
+  Serial.printf("Applying new settings from main loop: %s\n", pending_config_str);
+
+  // Create a mutable copy for strtok
+  char buffer[sizeof(pending_config_str)];
+  strcpy(buffer, pending_config_str);
+
+  // Tokenize the string by the comma delimiter
+  char *token = strtok(buffer, ",");
+  while (token != NULL)
+  {
+    if (token[0] == 'F')
+    {
+      int new_freq = atoi(token + 2); // Skip "F:"
+      if (new_freq > 0)
+      {
+        deep_sleep_seconds = new_freq;
+      }
+    }
+    else if (token[0] == 'T')
+    {
+      float new_thresh = atof(token + 2); // Skip "T:"
+      if (new_thresh >= 10 && new_thresh <= 95)
+      {
+        storage_threshold_percent = new_thresh;
+      }
+    }
+    token = strtok(NULL, ",");
+  }
+
+  // Save the updated values to non-volatile storage for persistence
+  preferences.begin("settings", false);
+  preferences.putInt("sleep_sec", deep_sleep_seconds);
+  preferences.putFloat("storage_pct", storage_threshold_percent);
+  preferences.end();
+
+  Serial.printf("Settings saved and applied: Interval=%ds, Threshold=%.1f%%\n", deep_sleep_seconds, storage_threshold_percent);
+  update_display(4, "Settings Saved!", true);
+  delay(1500);
+  update_display(4, "", true); // Clear the message
+
+  new_config_received = false; // Reset the flag
+}
+
 // --- SETUP: Runs once at power-on ---
 void setup()
 {
@@ -565,6 +550,12 @@ void setup()
 // --- LOOP: Main program cycle ---
 void loop()
 {
+  // 0. Check if there are new settings to apply.
+  if (new_config_received)
+  {
+    apply_new_settings();
+  }
+
   // 1. Wait for the specified interval. This uses the global variable that can be changed on-the-fly.
   Serial.printf("Waiting for %d seconds...\n", deep_sleep_seconds);
   delay(deep_sleep_seconds * 1000);
@@ -600,7 +591,6 @@ void loop()
   {
     Serial.printf("Transfer condition met (Usage: %.1f%%, Count: %d).\n", used_percentage, image_count);
 
-    // FIX: Refactored logic to ensure clear_image_buffers() is always called once after any transfer attempt.
     bool transfer_attempted = false;
 
     if (client_connected)
