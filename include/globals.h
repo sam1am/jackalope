@@ -5,24 +5,23 @@
 #include "SSD1306.h"
 #include "esp_camera.h"
 #include <BLEDevice.h>
+#include <Preferences.h>
 
-// --- PROTOCOL & PIN DEFINITIONS ---
-#define CHUNK_SIZE 512
+// --- PROTOCOL & BATCH CONFIGURATION ---
+#define CHUNK_SIZE 512      // The missing definition
+#define IMAGE_BATCH_SIZE 20 // Maximum number of images we can buffer in PSRAM
 #ifndef BLE_DEVICE_NAME
 #define BLE_DEVICE_NAME "T-Camera-BLE-Batch"
 #endif
 
-// --- SLEEP & BATCH CONFIGURATION ---
-#define DEEP_SLEEP_SECONDS 10 // Time between wake-ups
-#define IMAGE_BATCH_SIZE 2    // Number of wake-ups before capturing and sending
-
-// --- BLE UUIDs (Unchanged) ---
+// --- BLE UUIDs ---
 #define SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID_STATUS "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define CHARACTERISTIC_UUID_DATA "7347e350-5552-4822-8243-b8923a4114d2"
 #define CHARACTERISTIC_UUID_COMMAND "a244c201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID_CONFIG "a31a6820-8437-4f55-8898-5226c04a29a3"
 
-// --- Pin Definitions ---
+// --- Pin Definitions (Unchanged) ---
 #define PWDN_GPIO_NUM -1
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM 4
@@ -42,20 +41,19 @@
 #define I2C_SDA 21
 #define I2C_SCL 22
 
-// --- DEEP SLEEP PERSISTENT STATE ---
-// This counter tracks the number of times the device has woken up.
-extern RTC_DATA_ATTR int wake_count;
+// --- CONFIGURATION SETTINGS (Loaded from NVS) ---
+extern int deep_sleep_seconds;
+extern float storage_threshold_percent;
 
 // --- GLOBAL OBJECTS ---
 extern SSD1306 display;
+extern Preferences preferences;
 extern BLECharacteristic *pStatusCharacteristic;
-extern BLECharacteristic *pDataCharacteristic;
 
 // --- GLOBAL STATE FLAGS ---
 extern volatile bool client_connected;
 extern volatile bool next_chunk_requested;
 extern volatile bool transfer_acknowledged;
-// This counter is for the current batch, used only during an active connection.
 extern int image_count;
 
 // --- FUNCTION PROTOTYPES ---
@@ -65,7 +63,8 @@ void init_camera();
 void deinit_camera();
 void start_bluetooth();
 void send_batched_data();
-void enter_deep_sleep(bool camera_was_active);
 bool store_image_in_psram();
+void load_settings();
+void clear_image_buffers();
 
 #endif // GLOBALS_H

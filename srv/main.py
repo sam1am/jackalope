@@ -4,10 +4,9 @@ import os
 import threading
 import functools
 import sqlite3
-from flask import Flask, render_template, send_from_directory, jsonify
-from bleak import BleakScanner, BleakClient
-from bleak.exc import BleakError
 import time
+from flask import Flask, render_template, send_from_directory, jsonify, request
+from bleak import BleakScanner, BleakClient
 
 # --- CONFIGURATION ---
 FLASK_PORT = 5550
@@ -22,6 +21,7 @@ SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 CHARACTERISTIC_UUID_STATUS = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 CHARACTERISTIC_UUID_DATA = "7347e350-5552-4822-8243-b8923a4114d2"
 CHARACTERISTIC_UUID_COMMAND = "a244c201-1fb5-459e-8fcc-c5c9c331914b"
+CHARACTERISTIC_UUID_CONFIG = "a31a6820-8437-4f55-8898-5226c04a29a3"
 
 # --- PROTOCOL COMMANDS ---
 CMD_NEXT_CHUNK = b'N'
@@ -29,17 +29,25 @@ CMD_ACKNOWLEDGE = b'A'
 
 # --- WEB SERVER & GLOBAL STATE ---
 app = Flask(__name__, static_folder=IMGS_FOLDER_NAME)
-server_state = {"status": "Initializing..."}
+server_state = {
+    "status": "Initializing...",
+    "storage_usage": 0,
+    "settings": {"frequency": 30, "threshold": 80}
+}
 data_queue = None
 device_found_event = None
 found_device = None
+ble_client_instance = None
+pending_config_command = None
 
-# --- DATABASE SETUP ---
 
+# --- DATABASE HELPERS (MODIFIED FOR ROBUSTNESS) ---
 
-def setup_database():
-    if not os.path.exists(IMGS_PATH):
-        os.makedirs(IMGS_PATH)
+def get_db_connection():
+    """
+    Creates a database connection and ensures the 'captures' table exists.
+    This is the robust way to handle DB connections in the app.
+    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
@@ -52,29 +60,39 @@ def setup_database():
         )
     ''')
     conn.commit()
+    return conn
+
+
+def setup_filesystem():
+    """Ensures the image directory exists on startup."""
+    if not os.path.exists(IMGS_PATH):
+        print(f"Image directory not found. Creating at: {IMGS_PATH}")
+        os.makedirs(IMGS_PATH)
+    # Also ensure the DB is created on startup, just in case.
+    conn = get_db_connection()
     conn.close()
+    print("Filesystem and database are ready.")
 
 
-def db_insert_capture(timestamp, image_path, gps_lat=None, gps_lon=None):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO captures (timestamp, image_path, gps_lat, gps_lon) VALUES (?, ?, ?, ?)",
-        (timestamp, image_path, gps_lat, gps_lon)
-    )
-    conn.commit()
-    conn.close()
+def db_insert_capture(timestamp, image_path):
+    """Inserts a new capture record into the database."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO captures (timestamp, image_path) VALUES (?, ?)", (timestamp, image_path))
+        conn.commit()
+        conn.close()
+    except sqlite3.Error as e:
+        print(f"Database insert error: {e}")
 
-# --- BLE LOGIC ---
 
-
+# --- BLE LOGIC (Unchanged) ---
 async def transfer_file_data(client, expected_size, buffer, data_type):
     if expected_size == 0:
         return True
     bytes_received = 0
     try:
-        # --- MODIFIED LOGIC ---
-        # 1. Wait for the FIRST chunk. The ESP32 sends this automatically after we ACK the file start.
         print(f"Waiting for first chunk of {data_type}...")
         first_chunk = await asyncio.wait_for(data_queue.get(), timeout=15.0)
         buffer.extend(first_chunk)
@@ -82,8 +100,6 @@ async def transfer_file_data(client, expected_size, buffer, data_type):
         data_queue.task_done()
         print(
             f"Receiving {data_type}: {bytes_received}/{expected_size} bytes", end='\r')
-
-        # 2. Now loop for the rest of the data, requesting each subsequent chunk with 'N'.
         while bytes_received < expected_size:
             await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_NEXT_CHUNK, response=False)
             chunk = await asyncio.wait_for(data_queue.get(), timeout=15.0)
@@ -92,13 +108,10 @@ async def transfer_file_data(client, expected_size, buffer, data_type):
             data_queue.task_done()
             print(
                 f"Receiving {data_type}: {bytes_received}/{expected_size} bytes", end='\r')
-        # --- END MODIFIED LOGIC ---
-
     except asyncio.TimeoutError:
         print(
             f"\nERROR: Timeout waiting for {data_type} data at {bytes_received}/{expected_size} bytes.")
         return False
-
     print(
         f"\n-> {data_type} transfer complete ({bytes_received} bytes received).")
     return True
@@ -114,22 +127,24 @@ async def status_notification_handler(sender, data, client):
         status_str = data.decode('utf-8').strip()
         print(f"\n[STATUS] Received: {status_str}")
 
-        if status_str.startswith("COUNT:"):
-            parts = status_str.split(':')
-            image_count = int(parts[1])
-            server_state["status"] = f"Batch of {image_count} images detected. Acknowledging."
+        if status_str.startswith("PSRAM:"):
+            try:
+                usage_val = float(status_str.split(':')[1].split('%')[0])
+                server_state["storage_usage"] = round(usage_val, 1)
+            except (ValueError, IndexError):
+                pass
+            server_state["status"] = "Device ready to transfer."
+
+        elif status_str.startswith("COUNT:"):
+            image_count = int(status_str.split(':')[1])
+            server_state["status"] = f"Batch of {image_count} images incoming. Acknowledging."
             print(server_state["status"])
             await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_ACKNOWLEDGE, response=False)
-            print("Sent ACK for batch start")
 
         elif status_str.startswith("IMAGE:"):
-            parts = status_str.split(':')
-            img_size = int(parts[1])
+            img_size = int(status_str.split(':')[1])
             server_state["status"] = f"Receiving image ({img_size} bytes)..."
-            print(f"Image transfer starting. Expecting {img_size} bytes.")
             await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_ACKNOWLEDGE, response=False)
-            print("Sent ACK for image start")
-
             img_buffer = bytearray()
             if await transfer_file_data(client, img_size, img_buffer, "Image"):
                 timestamp = datetime.datetime.now()
@@ -139,32 +154,17 @@ async def status_notification_handler(sender, data, client):
                     f.write(img_buffer)
                 db_insert_capture(timestamp.isoformat(),
                                   os.path.join(IMGS_FOLDER_NAME, filename))
-                print(f"-> Saved image to {filepath} and logged to DB.")
+                print(f"-> Saved image to {filepath}")
                 server_state["status"] = f"Image saved: {filename}"
             else:
-                print("Image transfer failed.")
                 server_state["status"] = "Image transfer failed"
     except Exception as e:
         print(f"Error in status_notification_handler: {e}")
-        import traceback
-        traceback.print_exc()
 
 
 def detection_callback(device, advertising_data):
     global found_device, device_found_event
-    service_uuids = advertising_data.service_uuids or []
-
-    is_target = False
-    if device.name:
-        for target_name in DEVICE_NAMES:
-            if target_name in device.name:
-                is_target = True
-                break
-
-    if not is_target and SERVICE_UUID.lower() in [s.lower() for s in service_uuids]:
-        is_target = True
-
-    if is_target:
+    if device.name and any(name in device.name for name in DEVICE_NAMES):
         print(f"[SCAN] Target device found: {device.address} ({device.name})")
         if device_found_event and not device_found_event.is_set():
             found_device = device
@@ -172,97 +172,119 @@ def detection_callback(device, advertising_data):
 
 
 async def ble_communication_task():
-    global found_device, data_queue, device_found_event
+    global found_device, data_queue, device_found_event, ble_client_instance, pending_config_command
     data_queue = asyncio.Queue()
     device_found_event = asyncio.Event()
 
     while True:
-        server_state["status"] = f"Scanning for camera device..."
+        server_state["status"] = "Scanning for camera device..."
         print(f"\n{server_state['status']}")
-
         scanner = BleakScanner(detection_callback=detection_callback)
-
         try:
             await scanner.start()
             await asyncio.wait_for(device_found_event.wait(), timeout=120.0)
             await scanner.stop()
         except asyncio.TimeoutError:
-            print(f"No device found after 120 seconds. Restarting scan...")
             await scanner.stop()
-            await asyncio.sleep(2)
             continue
         except Exception as e:
             print(f"Error during scan: {e}")
             await scanner.stop()
-            await asyncio.sleep(5)
             continue
 
         if found_device:
             server_state["status"] = f"Connecting to {found_device.address}..."
-            print(server_state["status"])
             try:
                 async with BleakClient(found_device, timeout=20.0) as client:
+                    ble_client_instance = client
                     if client.is_connected:
                         server_state["status"] = "Connected. Setting up notifications..."
-                        print(server_state["status"])
-
                         while not data_queue.empty():
                             data_queue.get_nowait()
-
                         status_handler_with_client = functools.partial(
                             status_notification_handler, client=client)
-
                         await client.start_notify(CHARACTERISTIC_UUID_STATUS, status_handler_with_client)
-                        print("STATUS notifications enabled")
                         await client.start_notify(CHARACTERISTIC_UUID_DATA, data_notification_handler)
-                        print("DATA notifications enabled")
 
-                        server_state["status"] = "Ready. Waiting for device to send data..."
-                        print(server_state["status"])
-
+                        server_state["status"] = "Ready. Waiting for device data..."
                         while client.is_connected:
+                            if pending_config_command:
+                                print(
+                                    f"Sending config command: {pending_config_command}")
+                                try:
+                                    await client.write_gatt_char(
+                                        CHARACTERISTIC_UUID_CONFIG,
+                                        bytearray(
+                                            pending_config_command, 'utf-8'),
+                                        response=False
+                                    )
+                                    pending_config_command = None
+                                    server_state["status"] = "Settings sent to device."
+                                except Exception as e:
+                                    print(f"Failed to send config: {e}")
                             await asyncio.sleep(1)
-                        print("Client disconnected")
-
+                        print("Client disconnected.")
             except Exception as e:
                 server_state["status"] = f"Connection Error: {e}"
-                print(f"An unexpected error occurred: {e}")
             finally:
                 server_state["status"] = "Disconnected. Resuming scan."
-                print(server_state["status"])
                 device_found_event.clear()
                 found_device = None
+                ble_client_instance = None
                 await asyncio.sleep(2)
-        else:
-            device_found_event.clear()
-            await asyncio.sleep(2)
 
 
 # --- Flask Web Server ---
 @app.route('/')
-def index():
-    return render_template('index.html')
+def index(): return render_template('index.html')
 
 
 @app.route('/api/status')
 def api_status():
-    return jsonify(server_state)
+    return jsonify({"status": server_state.get("status"), "storage_usage": server_state.get("storage_usage")})
 
 
 @app.route('/api/captures')
 def api_captures():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    captures = cursor.execute(
-        "SELECT * FROM captures ORDER BY timestamp DESC").fetchall()
-    conn.close()
-    return jsonify([dict(row) for row in captures])
+    """API endpoint to get all capture records."""
+    try:
+        conn = get_db_connection()  # Use the robust helper
+        conn.row_factory = sqlite3.Row
+        captures = conn.execute(
+            "SELECT * FROM captures ORDER BY timestamp DESC").fetchall()
+        conn.close()
+        return jsonify([dict(row) for row in captures])
+    except sqlite3.Error as e:
+        print(f"Database select error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/settings', methods=['GET'])
+def get_settings(): return jsonify(server_state["settings"])
+
+
+@app.route('/api/settings', methods=['POST'])
+def set_settings():
+    global pending_config_command
+    data = request.get_json()
+    if not data or 'frequency' not in data or 'threshold' not in data:
+        return jsonify({"error": "Invalid data"}), 400
+
+    freq = int(data['frequency'])
+    thresh = int(data['threshold'])
+    server_state["settings"]["frequency"] = freq
+    server_state["settings"]["threshold"] = thresh
+    pending_config_command = f"F:{freq},T:{thresh}"
+
+    if ble_client_instance and ble_client_instance.is_connected:
+        server_state["status"] = "Settings queued for immediate sending..."
+    else:
+        server_state["status"] = "Settings queued. Will send on next connection."
+    return jsonify({"message": "Settings queued successfully"})
 
 
 @app.route('/imgs/<path:filename>')
-def serve_image(filename):
-    return send_from_directory(IMGS_PATH, filename)
+def serve_image(filename): return send_from_directory(IMGS_PATH, filename)
 
 
 def run_flask_app():
@@ -271,11 +293,9 @@ def run_flask_app():
 
 
 if __name__ == '__main__':
-    setup_database()
-    flask_thread = threading.Thread(target=run_flask_app, daemon=True)
-    flask_thread.start()
+    setup_filesystem()  # Renamed for clarity
+    threading.Thread(target=run_flask_app, daemon=True).start()
     time.sleep(1)
-
     try:
         print("Starting BLE communication task...")
         asyncio.run(ble_communication_task())
@@ -283,5 +303,3 @@ if __name__ == '__main__':
         print("\nProgram stopped by user.")
     except Exception as e:
         print(f"Fatal error in BLE task: {e}")
-        import traceback
-        traceback.print_exc()

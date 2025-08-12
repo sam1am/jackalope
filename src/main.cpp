@@ -2,13 +2,15 @@
 #include "display_handler.h"
 #include "esp_heap_caps.h"
 
-// --- RTC (Deep Sleep) Memory ---
-RTC_DATA_ATTR int wake_count = 0;
-
-// Define global objects
+// --- GLOBAL OBJECTS & VARIABLE DEFINITIONS ---
 SSD1306 display(0x3c, I2C_SDA, I2C_SCL, GEOMETRY_128_64);
+Preferences preferences;
 
-// Define global state flags
+// Configuration settings with defaults
+int deep_sleep_seconds = 5;
+float storage_threshold_percent = 0.4;
+
+// Global state flags
 volatile bool client_connected = false;
 volatile bool next_chunk_requested = false;
 volatile bool transfer_acknowledged = false;
@@ -16,24 +18,37 @@ volatile bool transfer_acknowledged = false;
 // Forward declaration from bluetooth_handler.cpp
 extern uint8_t *framebuffers[IMAGE_BATCH_SIZE];
 extern size_t fb_lengths[IMAGE_BATCH_SIZE];
-extern int image_count; // Use the non-RTC version
+extern int image_count;
+
+void clear_image_buffers()
+{
+  Serial.println("Clearing image buffers and freeing PSRAM...");
+  for (int i = 0; i < IMAGE_BATCH_SIZE; i++)
+  {
+    if (framebuffers[i] != NULL)
+    {
+      heap_caps_free(framebuffers[i]);
+      framebuffers[i] = NULL;
+    }
+    fb_lengths[i] = 0;
+  }
+  image_count = 0;
+  Serial.println("Buffers cleared.");
+}
 
 bool store_image_in_psram()
 {
   if (image_count >= IMAGE_BATCH_SIZE)
   {
-    Serial.println("PSRAM buffer is full.");
+    Serial.println("Image batch limit reached. Cannot store more images.");
     return false;
   }
-
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb)
   {
     Serial.println("Camera capture failed");
     return false;
   }
-
-  // Use heap_caps_malloc to allocate from PSRAM explicitly
   framebuffers[image_count] = (uint8_t *)heap_caps_malloc(fb->len, MALLOC_CAP_SPIRAM);
   if (!framebuffers[image_count])
   {
@@ -41,124 +56,109 @@ bool store_image_in_psram()
     esp_camera_fb_return(fb);
     return false;
   }
-
-  // Copy the image data
   memcpy(framebuffers[image_count], fb->buf, fb->len);
   fb_lengths[image_count] = fb->len;
-
-  Serial.printf("Stored image %d in batch (%u bytes) in PSRAM at %p.\n",
-                image_count + 1, fb_lengths[image_count], framebuffers[image_count]);
-
-  esp_camera_fb_return(fb);
+  Serial.printf("Stored image %d in batch (%u bytes).\n", image_count + 1, fb_lengths[image_count]);
   image_count++;
+  esp_camera_fb_return(fb);
   return true;
 }
 
-void enter_deep_sleep(bool camera_was_active)
+void load_settings()
 {
-  if (camera_was_active)
-  {
-    deinit_camera();
-  }
-  display.clear();
-  char sleep_buf[32];
-  sprintf(sleep_buf, "Sleeping... (%d/%d)", wake_count, IMAGE_BATCH_SIZE);
-  display.drawString(0, 0, sleep_buf);
-  display.display();
-  Serial.printf("Entering deep sleep for %d seconds... (Wake count: %d)\n\n", DEEP_SLEEP_SECONDS, wake_count);
-  esp_sleep_enable_timer_wakeup(DEEP_SLEEP_SECONDS * 1000000);
-  esp_deep_sleep_start();
+  preferences.begin("settings", true);
+  deep_sleep_seconds = preferences.getInt("sleep_sec", deep_sleep_seconds);
+  storage_threshold_percent = preferences.getFloat("storage_pct", storage_threshold_percent);
+  preferences.end();
+  Serial.printf("Loaded Settings: Capture Interval = %d sec, Storage Threshold = %.1f%%\n",
+                deep_sleep_seconds, storage_threshold_percent);
 }
 
+// --- SETUP: Runs once at power-on ---
 void setup()
 {
   Serial.begin(115200);
-  Serial.println("\n--- T-Camera BLE Batch Transfer ---");
+  Serial.println("\n--- T-Camera Continuous Timelapse Mode ---");
 
   init_display();
-  wake_count++; // Increment wake count on every wake-up
+  load_settings();
+  init_camera();
+  start_bluetooth();
 
-  char status_buf[32];
-  sprintf(status_buf, "Wake count: %d/%d", wake_count, IMAGE_BATCH_SIZE);
-  update_display(0, "Device Woke Up!", false);
+  update_display(0, "System Ready", true);
+  Serial.println("System initialized and running. Waiting for first capture interval.");
+}
+
+// --- LOOP: Main program cycle (Corrected Logic) ---
+void loop()
+{
+  // 1. Wait for the specified interval.
+  Serial.printf("Waiting for %d seconds...\n", deep_sleep_seconds);
+  delay(deep_sleep_seconds * 1000);
+
+  // 2. Capture an image. This now happens even if a client is connected.
+  Serial.println("Capture interval elapsed. Taking picture...");
+  if (!store_image_in_psram())
+  {
+    Serial.println("Failed to store image. Check PSRAM or batch size limit.");
+  }
+
+  // 3. Check PSRAM usage and update status
+  size_t total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+  size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  float used_percentage = total_psram > 0 ? (1.0 - ((float)free_psram / total_psram)) * 100.0 : 0;
+
+  char status_buf[40];
+  sprintf(status_buf, "PSRAM: %.1f%% | Imgs: %d", used_percentage, image_count);
+  Serial.println(status_buf);
   update_display(1, status_buf, true);
 
-  // If the batch interval is not yet reached, just go back to sleep.
-  if (wake_count < IMAGE_BATCH_SIZE)
+  // Also notify the server of the current status if it's connected
+  if (client_connected && pStatusCharacteristic != NULL)
   {
-    Serial.printf("This is wake %d of %d. Going back to sleep.\n", wake_count, IMAGE_BATCH_SIZE);
-    delay(1000); // Give time to read display
-    enter_deep_sleep(false);
+    pStatusCharacteristic->setValue(status_buf);
+    pStatusCharacteristic->notify();
   }
-  // If the batch interval is reached, capture all images now and then transmit.
-  else
+
+  // 4. Decide whether to transfer the batch
+  bool should_transfer = (image_count > 0 && (used_percentage >= storage_threshold_percent || image_count >= IMAGE_BATCH_SIZE));
+
+  if (should_transfer)
   {
-    Serial.printf("Batch interval reached (%d wakes). Starting capture process.\n", wake_count);
-    update_display(2, "Capturing batch...", true);
+    Serial.printf("Transfer condition met (Usage: %.1f%%, Count: %d).\n", used_percentage, image_count);
 
-    init_camera();
-
-    // Capture the entire batch of images in this one cycle
-    for (int i = 0; i < IMAGE_BATCH_SIZE; i++)
-    {
-      char capture_status[32];
-      sprintf(capture_status, "Capturing %d/%d...", i + 1, IMAGE_BATCH_SIZE);
-      update_display(3, capture_status, true);
-
-      if (!store_image_in_psram())
-      {
-        Serial.printf("Failed to capture image %d. Aborting.\n", i + 1);
-        update_display(4, "Capture FAILED", true);
-        delay(2000);
-        // Reset wake count and sleep even on failure
-        wake_count = 0;
-        enter_deep_sleep(true);
-        return; // Should not be reached
-      }
-      delay(500); // Small delay between captures
-    }
-
-    // All images are now stored in memory. Now start BLE.
-    update_display(2, "Batch ready. Start BLE", true);
-    start_bluetooth();
-    Serial.println("Advertising started. Waiting for connection...");
-
-    uint32_t start_time = millis();
-    // Wait for a client to connect for up to 60 seconds
-    while (!client_connected && (millis() - start_time < 60000))
-    {
-      delay(100);
-    }
-
+    // If a client is already connected, we can start the transfer immediately.
     if (client_connected)
     {
-      Serial.println("Client connected. Giving client time to prepare...");
-      delay(3000); // Give the client time to discover services and set up notifications
-
-      Serial.println("Starting batch data transfer...");
-      send_batched_data(); // This function now also resets wake_count on success
-
-      // Wait a moment for client to disconnect or for final data to be processed
-      uint32_t disconnect_wait_start = millis();
-      while (client_connected && (millis() - disconnect_wait_start < 5000))
-      {
-        delay(100);
-      }
+      Serial.println("Client is already connected. Starting transfer.");
+      update_display(2, "Connected! Sending...", true);
+      send_batched_data();
     }
     else
     {
-      Serial.println("No client connected within 60s timeout. Discarding data.");
-      // If no one connects, we must reset the wake_count to start a new cycle.
-      wake_count = 0;
+      // Otherwise, wait for a new connection for a limited time.
+      Serial.println("Waiting for a client to connect for transfer...");
+      update_display(2, "Batch full. Wait conn.", true);
+
+      uint32_t start_time = millis();
+      while (!client_connected && (millis() - start_time < 30000))
+      { // 30 second timeout
+        delay(100);
+      }
+
+      if (client_connected)
+      {
+        Serial.println("Client connected for transfer.");
+        update_display(2, "Connected! Sending...", true);
+        send_batched_data();
+      }
+      else
+      {
+        Serial.println("No client connected within timeout. Discarding data to continue.");
+        update_display(2, "No connection. Clearing.", true);
+        clear_image_buffers(); // Free up space to continue timelapse
+      }
     }
-
-    // De-init camera and go to sleep. The wake_count is reset by send_batched_data() on success
-    // or just above on timeout.
-    enter_deep_sleep(true);
+    update_display(2, "", true); // Clear the status line after the attempt
   }
-}
-
-void loop()
-{
-  // Intentionally empty. All logic is in setup() due to deep sleep.
 }

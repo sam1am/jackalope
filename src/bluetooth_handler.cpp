@@ -2,17 +2,65 @@
 #include "display_handler.h"
 #include <BLE2902.h>
 
-// --- RTC (Deep Sleep) Memory ---
-// These are no longer in RTC_DATA_ATTR as they are only used in one boot cycle
+// --- Image Buffers ---
+// These are standard global variables, NOT in RTC memory.
+// They are owned by this file and persist as long as the device is powered on.
 uint8_t *framebuffers[IMAGE_BATCH_SIZE];
 size_t fb_lengths[IMAGE_BATCH_SIZE];
-// Regular global variable for the number of images in the current batch
-int image_count = 0;
+int image_count = 0; // Tracks images in the current batch
 
 // BLE Characteristics
 BLECharacteristic *pStatusCharacteristic = NULL;
 BLECharacteristic *pDataCharacteristic = NULL;
 BLECharacteristic *pCommandCharacteristic = NULL;
+BLECharacteristic *pConfigCharacteristic = NULL;
+
+// --- Callback for handling settings changes from the server ---
+class ConfigCallbacks : public BLECharacteristicCallbacks
+{
+    void onWrite(BLECharacteristic *pCharacteristic)
+    {
+        std::string value = pCharacteristic->getValue();
+        if (value.length() > 0)
+        {
+            Serial.printf("Received new config string: %s\n", value.c_str());
+            // Expected format: "F:10,T:80" (Frequency in seconds, Threshold in percent)
+            const char *str = value.c_str();
+
+            // Parse frequency
+            char *freq_ptr = strstr(str, "F:");
+            if (freq_ptr)
+            {
+                int new_freq = atoi(freq_ptr + 2);
+                if (new_freq > 0)
+                {
+                    deep_sleep_seconds = new_freq;
+                }
+            }
+
+            // Parse threshold
+            char *thresh_ptr = strstr(str, "T:");
+            if (thresh_ptr)
+            {
+                float new_thresh = atof(thresh_ptr + 2);
+                if (new_thresh >= 10 && new_thresh <= 95)
+                {
+                    storage_threshold_percent = new_thresh;
+                }
+            }
+
+            // Save the updated values to non-volatile storage
+            preferences.begin("settings", false); // Open in read-write mode
+            preferences.putInt("sleep_sec", deep_sleep_seconds);
+            preferences.putFloat("storage_pct", storage_threshold_percent);
+            preferences.end();
+
+            Serial.printf("Settings saved: Interval=%ds, Threshold=%.1f%%\n", deep_sleep_seconds, storage_threshold_percent);
+            update_display(4, "Settings Saved!", true);
+            delay(1500); // Show message on display
+        }
+    }
+};
 
 // --- Flow Control Callbacks ---
 class CommandCallbacks : public BLECharacteristicCallbacks
@@ -23,17 +71,15 @@ class CommandCallbacks : public BLECharacteristicCallbacks
         if (value.length() > 0)
         {
             char cmd = value[0];
-            // Don't print for 'N' to reduce log spam
-            if (cmd != 'N')
+            if (cmd != 'N') // Don't spam the log for 'Next' commands
             {
                 Serial.printf("Received command: %c (0x%02X)\n", cmd, cmd);
             }
-
-            if (cmd == 'N') // "Next" chunk
+            if (cmd == 'N')
             {
                 next_chunk_requested = true;
             }
-            else if (cmd == 'A') // "Acknowledged" transfer start
+            else if (cmd == 'A')
             {
                 transfer_acknowledged = true;
                 Serial.println("ACK received from server");
@@ -54,13 +100,14 @@ class MyServerCallbacks : public BLEServerCallbacks
     void onDisconnect(BLEServer *pServer)
     {
         client_connected = false;
+        update_display(2, "Status: Disconnected");
         Serial.println("Client Disconnected.");
     }
 };
 
 void start_bluetooth()
 {
-    Serial.println("Starting BLE server for batch transfer...");
+    Serial.println("Starting BLE server...");
     BLEDevice::init(BLE_DEVICE_NAME);
     BLEDevice::setMTU(517);
 
@@ -69,20 +116,29 @@ void start_bluetooth()
 
     BLEService *pService = pServer->createService(SERVICE_UUID);
 
+    // Status Characteristic
     pStatusCharacteristic = pService->createCharacteristic(
         CHARACTERISTIC_UUID_STATUS,
         BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
     pStatusCharacteristic->addDescriptor(new BLE2902());
 
+    // Data Characteristic
     pDataCharacteristic = pService->createCharacteristic(
         CHARACTERISTIC_UUID_DATA,
         BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
     pDataCharacteristic->addDescriptor(new BLE2902());
 
+    // Command Characteristic
     pCommandCharacteristic = pService->createCharacteristic(
         CHARACTERISTIC_UUID_COMMAND,
         BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
     pCommandCharacteristic->setCallbacks(new CommandCallbacks());
+
+    // Configuration Characteristic
+    pConfigCharacteristic = pService->createCharacteristic(
+        CHARACTERISTIC_UUID_CONFIG,
+        BLECharacteristic::PROPERTY_WRITE);
+    pConfigCharacteristic->setCallbacks(new ConfigCallbacks());
 
     pService->start();
 
@@ -99,7 +155,7 @@ void notify_chunk(const uint8_t *data, size_t size)
 {
     pDataCharacteristic->setValue((uint8_t *)data, size);
     pDataCharacteristic->notify();
-    delay(10); // Small delay for notification to send
+    delay(10);
 }
 
 bool wait_for_acknowledgment(uint32_t timeout_ms)
@@ -132,7 +188,6 @@ bool send_single_file_with_flow_control(const uint8_t *buffer, size_t total_size
     if (total_size == 0)
         return true;
 
-    // 1. Send status (size) of the current file
     char status_buf[32];
     sprintf(status_buf, "%s:%u", data_type, total_size);
 
@@ -140,31 +195,25 @@ bool send_single_file_with_flow_control(const uint8_t *buffer, size_t total_size
     pStatusCharacteristic->setValue(status_buf);
     pStatusCharacteristic->notify();
     Serial.printf("[Image %d] Sent STATUS: %s. Waiting for ACK...\n", image_num, status_buf);
-
     delay(50);
 
-    // 2. Wait for server to acknowledge it's ready for this file
     if (!wait_for_acknowledgment(10000))
     {
-        Serial.printf("[Image %d] ERROR: Timeout waiting for server to acknowledge file transfer start.\n", image_num);
+        Serial.printf("[Image %d] ERROR: Timeout waiting for server ACK.\n", image_num);
         return false;
     }
 
-    Serial.printf("[Image %d] Server ACK received. Starting %s transfer (%u bytes)...\n", image_num, data_type, total_size);
+    Serial.printf("[Image %d] Server ACK received. Starting transfer (%u bytes)...\n", image_num, total_size);
 
-    // 3. Send the file data in chunks
     size_t sent = 0;
     int chunk_count = 0;
 
-    // --- MODIFIED LOGIC ---
-    // The ACK serves as the request for the FIRST chunk. Send it immediately.
     size_t chunk_size = (total_size < CHUNK_SIZE) ? total_size : CHUNK_SIZE;
     notify_chunk(buffer, chunk_size);
     sent += chunk_size;
     chunk_count++;
-    Serial.printf("[Image %d] Progress: %u/%u bytes (Sent first chunk on ACK)\n", image_num, sent, total_size);
+    Serial.printf("[Image %d] Progress: %u/%u bytes\n", image_num, sent, total_size);
 
-    // Now, for all SUBSEQUENT chunks, wait for the 'N' command from the server.
     while (sent < total_size)
     {
         if (!wait_for_next_chunk_request(15000))
@@ -175,7 +224,6 @@ bool send_single_file_with_flow_control(const uint8_t *buffer, size_t total_size
 
         size_t remaining = total_size - sent;
         chunk_size = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
-
         notify_chunk(buffer + sent, chunk_size);
         sent += chunk_size;
         chunk_count++;
@@ -185,10 +233,8 @@ bool send_single_file_with_flow_control(const uint8_t *buffer, size_t total_size
             Serial.printf("[Image %d] Progress: %u/%u bytes\n", image_num, sent, total_size);
         }
     }
-    // --- END MODIFIED LOGIC ---
 
     Serial.printf("[Image %d] Transfer complete (%u bytes sent in %d chunks).\n", image_num, sent, chunk_count);
-
     delay(100);
     return true;
 }
@@ -201,9 +247,8 @@ void send_batched_data()
         return;
     }
 
-    delay(500); // Give client time to be fully ready
+    delay(500);
 
-    // 1. Notify the server how many images are in the batch
     char count_buf[32];
     sprintf(count_buf, "COUNT:%d", image_count);
 
@@ -211,10 +256,8 @@ void send_batched_data()
     pStatusCharacteristic->setValue(count_buf);
     pStatusCharacteristic->notify();
     Serial.printf("Notified server: %s. Waiting for ACK...\n", count_buf);
+    delay(50);
 
-    delay(50); // Ensure notification is sent
-
-    // 2. Wait for server to acknowledge it's ready for the batch
     if (!wait_for_acknowledgment(10000))
     {
         Serial.println("ERROR: Server did not acknowledge batch start. Aborting.");
@@ -223,7 +266,6 @@ void send_batched_data()
 
     Serial.println("Server acknowledged batch start. Beginning transfers...");
 
-    // 3. Loop through and send each stored image
     for (int i = 0; i < image_count; i++)
     {
         if (!client_connected)
@@ -231,15 +273,9 @@ void send_batched_data()
             Serial.println("Client disconnected mid-batch. Aborting.");
             break;
         }
-
         Serial.printf("\n=== Sending image %d of %d (size: %u bytes) ===\n", i + 1, image_count, fb_lengths[i]);
-
         if (framebuffers[i] == NULL)
-        {
-            Serial.printf("ERROR: Image %d buffer is NULL!\n", i);
             continue;
-        }
-
         if (!send_single_file_with_flow_control(framebuffers[i], fb_lengths[i], "IMAGE", i + 1))
         {
             Serial.printf("Failed to send image %d. Aborting batch.\n", i + 1);
@@ -250,17 +286,8 @@ void send_batched_data()
 
     Serial.println("\n=== Batch Transfer Complete ===");
 
-    for (int i = 0; i < image_count; i++)
-    {
-        if (framebuffers[i] != NULL)
-        {
-            heap_caps_free(framebuffers[i]);
-            framebuffers[i] = NULL;
-            fb_lengths[i] = 0;
-        }
-    }
-    image_count = 0;
-    wake_count = 0;
+    // Clean up the buffers and reset the image counter for the next round of captures.
+    clear_image_buffers();
 
-    Serial.println("Memory freed and all counters reset.");
+    Serial.println("Memory freed and image counter reset.");
 }

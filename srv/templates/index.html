@@ -26,6 +26,8 @@
         h1,
         h2 {
             color: #1c1e21;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
         }
 
         #status-bar {
@@ -35,6 +37,51 @@
             color: #004085;
             border-radius: 4px;
             margin-bottom: 20px;
+        }
+
+        .settings-form {
+            background-color: #f9f9f9;
+            padding: 20px;
+            border: 1px solid #eee;
+            border-radius: 8px;
+            margin-top: 20px;
+            margin-bottom: 30px;
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 20px;
+            align-items: end;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        .form-group input {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }
+
+        .form-group button {
+            background-color: #007bff;
+            color: white;
+            width: 100%;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1em;
+        }
+
+        .form-group button:hover {
+            background-color: #0056b3;
         }
 
         #gallery {
@@ -72,27 +119,81 @@
     <div class="container">
         <h1>T-Camera BLE Dashboard</h1>
         <div id="status-bar">
-            <strong>Status:</strong> <span id="status-text">Loading...</span>
+            <strong>Status:</strong> <span id="status-text">Loading...</span> |
+            <strong>Storage Used:</strong> <span id="storage-usage-text">0</span>%
+        </div>
+
+        <div class="settings-form">
+            <h2>Device Settings</h2>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="capture-frequency">Capture Frequency (seconds)</label>
+                    <input type="number" id="capture-frequency" min="5">
+                </div>
+                <div class="form-group">
+                    <label for="storage-threshold">Send Threshold (%)</label>
+                    <input type="number" id="storage-threshold" min="10" max="95">
+                </div>
+                <div class="form-group">
+                    <button id="save-settings-btn">Save & Send to Device</button>
+                </div>
+            </div>
         </div>
 
         <h2>Captured Images</h2>
         <div id="gallery">
-            <p>No images loaded yet. Waiting for data...</p>
+            <p>Waiting for data...</p>
         </div>
     </div>
 
     <script>
         const gallery = document.getElementById('gallery');
         const statusText = document.getElementById('status-text');
+        const storageUsageText = document.getElementById('storage-usage-text');
+        const freqInput = document.getElementById('capture-frequency');
+        const threshInput = document.getElementById('storage-threshold');
+        const saveBtn = document.getElementById('save-settings-btn');
 
         async function fetchStatus() {
             try {
                 const response = await fetch('/api/status');
                 const data = await response.json();
                 statusText.textContent = data.status || 'N/A';
+                storageUsageText.textContent = data.storage_usage || '0';
             } catch (error) {
                 console.error('Error fetching status:', error);
                 statusText.textContent = 'Error loading status.';
+            }
+        }
+
+        async function fetchSettings() {
+            try {
+                const response = await fetch('/api/settings');
+                const data = await response.json();
+                freqInput.value = data.frequency;
+                threshInput.value = data.threshold;
+            } catch (error) {
+                console.error('Error fetching settings:', error);
+            }
+        }
+
+        async function saveSettings() {
+            const settings = {
+                frequency: parseInt(freqInput.value, 10),
+                threshold: parseInt(threshInput.value, 10)
+            };
+            statusText.textContent = "Queueing settings for device...";
+            try {
+                const response = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings)
+                });
+                const result = await response.json();
+                statusText.textContent = result.message || "Settings sent!";
+            } catch (error) {
+                console.error('Error saving settings:', error);
+                statusText.textContent = "Error saving settings.";
             }
         }
 
@@ -100,31 +201,21 @@
             try {
                 const response = await fetch('/api/captures');
                 const captures = await response.json();
-
                 if (captures.length === 0) {
-                    gallery.innerHTML = '<p>No images have been captured yet.</p>';
+                    gallery.innerHTML = '<p>No images have been received yet.</p>';
                     return;
                 }
-
-                gallery.innerHTML = ''; // Clear previous content
+                gallery.innerHTML = '';
                 captures.forEach(capture => {
                     const card = document.createElement('div');
                     card.className = 'card';
-
                     const img = document.createElement('img');
                     img.src = capture.image_path;
                     img.alt = `Capture from ${capture.timestamp}`;
-
                     const info = document.createElement('div');
                     info.className = 'card-info';
-
                     const timestamp = new Date(capture.timestamp).toLocaleString();
                     info.innerHTML = `<p><strong>Timestamp:</strong> ${timestamp}</p>`;
-
-                    if (capture.gps_lat && capture.gps_lon) {
-                        info.innerHTML += `<p><strong>GPS:</strong> ${capture.gps_lat}, ${capture.gps_lon}</p>`;
-                    }
-
                     card.appendChild(img);
                     card.appendChild(info);
                     gallery.appendChild(card);
@@ -135,18 +226,19 @@
             }
         }
 
-        // Fetch data every 3 seconds
+        saveBtn.addEventListener('click', saveSettings);
+
         setInterval(() => {
-            fetchStatus();
-            fetchCaptures();
-        }, 3000);
+                fetchStatus();
+                fetchCaptures();
+            }, 3000);
 
-        // Initial load
-        document.addEventListener('DOMContentLoaded', () => {
-            fetchStatus();
-            fetchCaptures();
-        });
-    </script>
-</body>
-
+            document.addEventListener('DOMContentLoaded', () => {
+                fetchStatus();
+                fetchCaptures();
+                fetchSettings();
+            });
+        </script>
+    </body>
+    
 </html>
