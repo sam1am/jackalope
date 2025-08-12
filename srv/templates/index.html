@@ -4,74 +4,149 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SamCam Live View</title>
+    <title>T-Camera BLE Dashboard</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            text-align: center;
-            background-color: #282c34;
-            color: white;
+            background-color: #f0f2f5;
+            color: #333;
             margin: 0;
             padding: 20px;
         }
 
-        h1 {
-            color: #61dafb;
-        }
-
-        #image-container {
-            margin-top: 20px;
-            margin-bottom: 20px;
-            min-height: 480px;
-            /* VGA Height */
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        img {
-            max-width: 95%;
-            max-height: 80vh;
-            border: 3px solid #61dafb;
+        .container {
+            max-width: 1200px;
+            margin: auto;
+            background: #fff;
+            padding: 20px;
             border-radius: 8px;
-            background-color: #3c4049;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        h1,
+        h2 {
+            color: #1c1e21;
         }
 
         #status-bar {
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            width: 100%;
-            background-color: #20232a;
-            color: #ffffff;
-            padding: 8px 0;
+            padding: 10px 15px;
+            background-color: #e7f3ff;
+            border: 1px solid #cce5ff;
+            color: #004085;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+
+        #gallery {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 15px;
+        }
+
+        .card {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        .card img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .card-info {
+            padding: 10px;
+            background-color: #fafafa;
             font-size: 0.9em;
+        }
+
+        .card-info p {
+            margin: 0 0 5px 0;
         }
     </style>
 </head>
 
 <body>
+    <div class="container">
+        <h1>T-Camera BLE Dashboard</h1>
+        <div id="status-bar">
+            <strong>Status:</strong> <span id="status-text">Loading...</span>
+        </div>
 
-    <h1>SamCam Live View</h1>
-    <p>Image should update automatically. Use the button on the ESP32 to change modes.</p>
-
-    <div id="image-container">
-        <img id="stream" src="{{ url_for('latest_image') }}" alt="Live Stream - Waiting for image...">
-    </div>
-
-    <div id="status-bar">
-        Server Status: <span id="status">{{ status }}</span>
+        <h2>Captured Images</h2>
+        <div id="gallery">
+            <p>No images loaded yet. Waiting for data...</p>
+        </div>
     </div>
 
     <script>
-        // This function forces the browser to re-request the image, bypassing the cache.
-        // The timestamp parameter is ignored by the server but makes the URL unique for the browser.
-        setInterval(function () {
-            const imageElement = document.getElementById('stream');
-            imageElement.src = "{{ url_for('latest_image') }}?timestamp=" + new Date().getTime();
-        }, 1000); // Refresh every 1 second
-    </script>
+        const gallery = document.getElementById('gallery');
+        const statusText = document.getElementById('status-text');
 
+        async function fetchStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                statusText.textContent = data.status || 'N/A';
+            } catch (error) {
+                console.error('Error fetching status:', error);
+                statusText.textContent = 'Error loading status.';
+            }
+        }
+
+        async function fetchCaptures() {
+            try {
+                const response = await fetch('/api/captures');
+                const captures = await response.json();
+
+                if (captures.length === 0) {
+                    gallery.innerHTML = '<p>No images have been captured yet.</p>';
+                    return;
+                }
+
+                gallery.innerHTML = ''; // Clear previous content
+                captures.forEach(capture => {
+                    const card = document.createElement('div');
+                    card.className = 'card';
+
+                    const img = document.createElement('img');
+                    img.src = capture.image_path;
+                    img.alt = `Capture from ${capture.timestamp}`;
+
+                    const info = document.createElement('div');
+                    info.className = 'card-info';
+
+                    const timestamp = new Date(capture.timestamp).toLocaleString();
+                    info.innerHTML = `<p><strong>Timestamp:</strong> ${timestamp}</p>`;
+
+                    if (capture.gps_lat && capture.gps_lon) {
+                        info.innerHTML += `<p><strong>GPS:</strong> ${capture.gps_lat}, ${capture.gps_lon}</p>`;
+                    }
+
+                    card.appendChild(img);
+                    card.appendChild(info);
+                    gallery.appendChild(card);
+                });
+            } catch (error) {
+                console.error('Error fetching captures:', error);
+                gallery.innerHTML = '<p>Error loading images.</p>';
+            }
+        }
+
+        // Fetch data every 3 seconds
+        setInterval(() => {
+            fetchStatus();
+            fetchCaptures();
+        }, 3000);
+
+        // Initial load
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchStatus();
+            fetchCaptures();
+        });
+    </script>
 </body>
 
 </html>

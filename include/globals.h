@@ -6,11 +6,15 @@
 #include "esp_camera.h"
 #include <BLEDevice.h>
 
-// --- PROTOCOL & PIN DEFINITIONS (Unchanged) ---
+// --- PROTOCOL & PIN DEFINITIONS ---
 #define CHUNK_SIZE 512
 #ifndef BLE_DEVICE_NAME
-#define BLE_DEVICE_NAME "T-Camera-BLE"
+#define BLE_DEVICE_NAME "T-Camera-BLE-Batch"
 #endif
+
+// --- SLEEP & BATCH CONFIGURATION ---
+#define DEEP_SLEEP_SECONDS 10 // Time between wake-ups
+#define IMAGE_BATCH_SIZE 2    // Number of wake-ups before capturing and sending
 
 // --- BLE UUIDs (Unchanged) ---
 #define SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -18,7 +22,7 @@
 #define CHARACTERISTIC_UUID_DATA "7347e350-5552-4822-8243-b8923a4114d2"
 #define CHARACTERISTIC_UUID_COMMAND "a244c201-1fb5-459e-8fcc-c5c9c331914b"
 
-// --- Pin & Audio Definitions (Unchanged) ---
+// --- Pin Definitions ---
 #define PWDN_GPIO_NUM -1
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM 4
@@ -37,45 +41,31 @@
 #define PCLK_GPIO_NUM 25
 #define I2C_SDA 21
 #define I2C_SCL 22
-#define BTN_GPIO_NUM 15
-#define I2S_SCK 26
-#define I2S_WS 32
-#define I2S_SD 33
-#define SAMPLE_RATE 8000
-#define RECORD_DURATION 10
-#define HEADER_SIZE 44
 
-// --- CAPTURE MODE CONTROL ---
-enum CaptureMode
-{
-    MODE_BOTH,
-    MODE_IMAGE_ONLY,
-    MODE_AUDIO_ONLY,
-    MODE_COUNT
-};
-extern const char *mode_names[];
-extern volatile CaptureMode current_mode;
-extern volatile bool mode_changed;
+// --- DEEP SLEEP PERSISTENT STATE ---
+// This counter tracks the number of times the device has woken up.
+extern RTC_DATA_ATTR int wake_count;
 
 // --- GLOBAL OBJECTS ---
 extern SSD1306 display;
-// extern hw_timer_t *timer; // REMOVED
 extern BLECharacteristic *pStatusCharacteristic;
 extern BLECharacteristic *pDataCharacteristic;
 
 // --- GLOBAL STATE FLAGS ---
 extern volatile bool client_connected;
 extern volatile bool next_chunk_requested;
-extern volatile bool transfer_complete;
-extern volatile bool capture_requested; // The new server-driven trigger
+extern volatile bool transfer_acknowledged;
+// This counter is for the current batch, used only during an active connection.
+extern int image_count;
 
 // --- FUNCTION PROTOTYPES ---
 void init_display();
+void update_display(int line, const char *text, bool do_display);
 void init_camera();
-void init_audio();
-void init_hardware();
+void deinit_camera();
 void start_bluetooth();
-void handle_capture_cycle();
-void update_mode_display();
+void send_batched_data();
+void enter_deep_sleep(bool camera_was_active);
+bool store_image_in_psram();
 
 #endif // GLOBALS_H

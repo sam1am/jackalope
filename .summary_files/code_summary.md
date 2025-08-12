@@ -1,30 +1,40 @@
-Project Root: /Users/johngarfield/Documents/PlatformIO/Projects/SamTest
+Project Root: /Users/johngarfield/Documents/GitHub/jackalope
 Project Structure:
 ```
 .
 |-- .gitignore
+|-- LICENSE
+|-- README
 |-- docs
     |-- pinout.md
 |-- include
     |-- README
-    |-- audio_handler.h
     |-- bluetooth_handler.h
     |-- camera_handler.h
     |-- display_handler.h
     |-- globals.h
-    |-- hardware_handler.h
 |-- lib
     |-- README
 |-- platformio.ini
 |-- src
-    |-- audio_handler.cpp
     |-- bluetooth_handler.cpp
     |-- camera_handler.cpp
     |-- display_handler.cpp
-    |-- hardware_handler.cpp
     |-- main.cpp
 |-- srv
     |-- .gitignore
+    |-- captures.db
+    |-- imgs
+        |-- 2025-08-12_10-34-30-465720.jpg
+        |-- 2025-08-12_10-35-03-538132.jpg
+        |-- 2025-08-12_10-35-35-761268.jpg
+        |-- 2025-08-12_10-36-07-942298.jpg
+        |-- 2025-08-12_10-36-40-100989.jpg
+        |-- 2025-08-12_10-37-12-711480.jpg
+        |-- 2025-08-12_10-37-45-204457.jpg
+        |-- 2025-08-12_10-38-17-543799.jpg
+        |-- 2025-08-12_10-38-50-002978.jpg
+        |-- 2025-08-12_10-39-22-402469.jpg
     |-- main.py
     |-- reqs.txt
     |-- static
@@ -37,104 +47,6 @@ Project Structure:
 ```
 
 ---
-## File: docs/pinout.md
-
-```md
-
-<h1 align = "center">🌟 T Camear V162 🌟</h1>
-
-
-|    Name    | T-Camear V162 |
-| :--------: | :-----------: |
-|   DVP Y9   |      36       |
-|   DVP Y8   |      37       |
-|   DVP Y7   |      38       |
-|   DVP Y6   |      39       |
-|   DVP Y5   |      35       |
-|   DVP Y4   |      14       |
-|   DVP Y3   |      13       |
-|   DVP Y2   |      34       |
-|  DVP VSNC  |       5       |
-|  DVP HREF  |      27       |
-|  DVP PCLK  |      25       |
-|  DVP PWD   |      N/A      |
-|  DVP XCLK  |       4       |
-|  DVP SIOD  |      18       |
-|  DVP SIOC  |      23       |
-| DVP RESET  |      N/A      |
-|    SDA     |      21       |
-|    SCL     |      22       |
-|   Button   |      15       |
-|    PIR     |      19       |
-| OLED Model |    SSD1306    |
-| TFT Width  |      128      |
-| TFT Height |      64       |
-|  IIS SCK   |      26       |
-|   IIS WS   |      32       |
-|  IIS DOUT  |      33       |
-
-* Note: **PIR** Pin not **RTC IO**, unable to wake from deep sleep
-
-### Programming Notes:
-1. When using **T-Camear V162** ,uncomment **CAMERA_MODEL_TTGO_T_CAMERA_V162** in **sketch.ino**
-1. The following libraries need to be installed to compile
-    - [mathertel/OneButton](https://github.com/mathertel/OneButton) 
-    - [ThingPulse/esp8266-oled-ssd1306](https://github.com/ThingPulse/esp8266-oled-ssd1306)
-
-```
----
-## File: include/audio_handler.h
-
-```h
-#ifndef AUDIO_HANDLER_H
-#define AUDIO_HANDLER_H
-
-#include <Arduino.h>
-
-void init_audio();
-void create_wav_header(byte *header, int data_size, int bitsPerSample);
-
-#endif // AUDIO_HANDLER_H
-
-
-```
----
-## File: include/bluetooth_handler.h
-
-```h
-#ifndef BLUETOOTH_HANDLER_H
-#define BLUETOOTH_HANDLER_H
-
-void start_bluetooth();
-void handle_capture_cycle();
-
-#endif // BLUETOOTH_HANDLER_H
-```
----
-## File: include/camera_handler.h
-
-```h
-#ifndef CAMERA_HANDLER_H
-#define CAMERA_HANDLER_H
-
-void init_camera();
-
-#endif // CAMERA_HANDLER_H
-```
----
-## File: include/display_handler.h
-
-```h
-#ifndef DISPLAY_HANDLER_H
-#define DISPLAY_HANDLER_H
-
-void init_display();
-void update_display(int line, const char *text, bool do_display = true);
-void update_mode_display();
-
-#endif // DISPLAY_HANDLER_H
-```
----
 ## File: include/globals.h
 
 ```h
@@ -146,11 +58,15 @@ void update_mode_display();
 #include "esp_camera.h"
 #include <BLEDevice.h>
 
-// --- PROTOCOL & PIN DEFINITIONS (Unchanged) ---
+// --- PROTOCOL & PIN DEFINITIONS ---
 #define CHUNK_SIZE 512
 #ifndef BLE_DEVICE_NAME
-#define BLE_DEVICE_NAME "T-Camera-BLE"
+#define BLE_DEVICE_NAME "T-Camera-BLE-Batch"
 #endif
+
+// --- SLEEP & BATCH CONFIGURATION ---
+#define DEEP_SLEEP_SECONDS 10 // Take a photo every X seconds
+#define IMAGE_BATCH_SIZE 2 // Send data after every X captures
 
 // --- BLE UUIDs (Unchanged) ---
 #define SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -158,7 +74,7 @@ void update_mode_display();
 #define CHARACTERISTIC_UUID_DATA "7347e350-5552-4822-8243-b8923a4114d2"
 #define CHARACTERISTIC_UUID_COMMAND "a244c201-1fb5-459e-8fcc-c5c9c331914b"
 
-// --- Pin & Audio Definitions (Unchanged) ---
+// --- Pin Definitions ---
 #define PWDN_GPIO_NUM -1
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM 4
@@ -177,65 +93,31 @@ void update_mode_display();
 #define PCLK_GPIO_NUM 25
 #define I2C_SDA 21
 #define I2C_SCL 22
-#define BTN_GPIO_NUM 15
-#define I2S_SCK 26
-#define I2S_WS 32
-#define I2S_SD 33
-#define SAMPLE_RATE 8000
-#define RECORD_DURATION 10
-#define HEADER_SIZE 44
 
-// --- CAPTURE MODE CONTROL ---
-enum CaptureMode
-{
-    MODE_BOTH,
-    MODE_IMAGE_ONLY,
-    MODE_AUDIO_ONLY,
-    MODE_COUNT
-};
-extern const char *mode_names[];
-extern volatile CaptureMode current_mode;
-extern volatile bool mode_changed;
+// --- DEEP SLEEP PERSISTENT STATE ---
+extern RTC_DATA_ATTR int image_count;
 
 // --- GLOBAL OBJECTS ---
 extern SSD1306 display;
-// extern hw_timer_t *timer; // REMOVED
 extern BLECharacteristic *pStatusCharacteristic;
 extern BLECharacteristic *pDataCharacteristic;
 
 // --- GLOBAL STATE FLAGS ---
 extern volatile bool client_connected;
 extern volatile bool next_chunk_requested;
-extern volatile bool transfer_complete;
-extern volatile bool capture_requested; // The new server-driven trigger
+extern volatile bool transfer_acknowledged;
 
 // --- FUNCTION PROTOTYPES ---
 void init_display();
+void update_display(int line, const char *text, bool do_display);
 void init_camera();
-void init_audio();
-void init_hardware();
+void deinit_camera();
 void start_bluetooth();
-void handle_capture_cycle();
-void update_mode_display();
+void send_batched_data();
+void enter_deep_sleep(bool camera_was_active);
+bool store_image_in_psram();
 
 #endif // GLOBALS_H
-```
----
-## File: include/hardware_handler.h
-
-```h
-#ifndef HARDWARE_HANDLER_H
-#define HARDWARE_HANDLER_H
-
-#include "globals.h"
-
-extern portMUX_TYPE buttonMux;
-
-void init_hardware();
-void IRAM_ATTR on_timer();
-void IRAM_ATTR handle_button_press();
-
-#endif // HARDWARE_HANDLER_H
 ```
 ---
 ## File: platformio.ini
@@ -256,97 +138,26 @@ lib_deps =
     thingpulse/ESP8266 and ESP32 OLED driver for SSD1306 displays
 
 ; 2. Enable PSRAM, tell the camera library which board we are using, and define the BLE device name.
+; FIX: Corrected the escaping for the device name
 build_flags =
     -D BOARD_HAS_PSRAM
     -D CAMERA_MODEL_TTGO_T_CAMERA_V162
-    -D BLE_DEVICE_NAME="\"T-Camera-BLE\""
+    -D BLE_DEVICE_NAME=\"T-Camera-BLE-Batch\"
 
 ; 3. Ensure we have enough space for the large camera application firmware.
 board_build.partitions = huge_app.csv
 ```
 ---
-## File: src/audio_handler.cpp
-
-```cpp
-#include "globals.h"
-#include "display_handler.h"
-#include "driver/i2s.h"
-
-void init_audio()
-{
-    i2s_config_t i2s_config = {
-        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
-        .sample_rate = SAMPLE_RATE,
-        .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
-        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
-        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = 8,
-        .dma_buf_len = 64,
-        .use_apll = false};
-    if (i2s_driver_install(I2S_NUM_1, &i2s_config, 0, NULL) != ESP_OK)
-    {
-        update_display(1, "Mic FAIL");
-        Serial.println("Mic Init Failed!");
-        return;
-    }
-    i2s_pin_config_t pin_config = {
-        .bck_io_num = I2S_SCK,
-        .ws_io_num = I2S_WS,
-        .data_out_num = I2S_PIN_NO_CHANGE,
-        .data_in_num = I2S_SD};
-    i2s_set_pin(I2S_NUM_1, &pin_config);
-    update_display(1, "Mic Init OK");
-    Serial.println("Mic Initialized.");
-}
-
-void create_wav_header(byte *header, int data_size, int bitsPerSample)
-{
-    int32_t sampleRate = SAMPLE_RATE;
-    int16_t numChannels = 1;
-    int16_t blockAlign = numChannels * bitsPerSample / 8;
-    int32_t byteRate = sampleRate * blockAlign;
-    int32_t subchunk2Size = data_size;
-    int32_t chunkSize = 36 + subchunk2Size;
-
-    header[0] = 'R';
-    header[1] = 'I';
-    header[2] = 'F';
-    header[3] = 'F';
-    *((int32_t *)(header + 4)) = chunkSize;
-    header[8] = 'W';
-    header[9] = 'A';
-    header[10] = 'V';
-    header[11] = 'E';
-    header[12] = 'f';
-    header[13] = 'm';
-    header[14] = 't';
-    header[15] = ' ';
-    *((int32_t *)(header + 16)) = 16;
-    *((int16_t *)(header + 20)) = 1; // PCM
-    *((int16_t *)(header + 22)) = numChannels;
-    *((int32_t *)(header + 24)) = sampleRate;
-    *((int32_t *)(header + 28)) = byteRate;
-    *((int16_t *)(header + 32)) = blockAlign;
-    *((int16_t *)(header + 34)) = bitsPerSample;
-    header[36] = 'd';
-    header[37] = 'a';
-    header[38] = 't';
-    header[39] = 'a';
-    *((int32_t *)(header + 40)) = subchunk2Size;
-}
-```
----
 ## File: src/bluetooth_handler.cpp
 
 ```cpp
-// ... (includes and other functions are the same as the previous response) ...
 #include "globals.h"
-#include "bluetooth_handler.h"
 #include "display_handler.h"
-#include "audio_handler.h"
-#include "driver/i2s.h"
 #include <BLE2902.h>
+
+// --- RTC (Deep Sleep) Memory ---
+RTC_DATA_ATTR uint8_t *framebuffers[IMAGE_BATCH_SIZE];
+RTC_DATA_ATTR size_t fb_lengths[IMAGE_BATCH_SIZE];
 
 // BLE Characteristics
 BLECharacteristic *pStatusCharacteristic = NULL;
@@ -362,75 +173,57 @@ class CommandCallbacks : public BLECharacteristicCallbacks
         if (value.length() > 0)
         {
             char cmd = value[0];
-            Serial.printf("CMD onWrite: %c\n", cmd); // <-- helpful debug log
-            if (cmd == 'N')                          // "Next" chunk
+            Serial.printf("Received command: %c (0x%02X)\n", cmd, cmd);
+            if (cmd == 'N') // "Next" chunk
             {
                 next_chunk_requested = true;
             }
-            else if (cmd == 'C') // "Complete"
+            else if (cmd == 'A') // "Acknowledged" transfer start
             {
-                transfer_complete = true;
-                Serial.println("Server acknowledged completion. Ready for next trigger.");
-            }
-            else if (cmd == 'T') // "Trigger" capture
-            {
-                if (transfer_complete)
-                {
-                    Serial.println("DEBUG: Received TRIGGER signal from server.");
-                    capture_requested = true;
-                }
-                else
-                {
-                    Serial.println("WARN: Ignoring trigger, transfer already in progress.");
-                }
+                transfer_acknowledged = true;
+                Serial.println("ACK received from server");
             }
         }
     }
 };
 
-// MyServerCallbacks, start_bluetooth, notify_chunk and wait_for_next_chunk_request are correct from the previous attempt and do not need changes.
 class MyServerCallbacks : public BLEServerCallbacks
 {
     void onConnect(BLEServer *pServer)
     {
         client_connected = true;
-        transfer_complete = true; // Ready for a trigger command
-        update_mode_display();
-        Serial.println("Client Connected. Waiting for Trigger command...");
+        update_display(2, "Status: Connected");
+        Serial.println("Client Connected.");
     }
 
     void onDisconnect(BLEServer *pServer)
     {
         client_connected = false;
-        transfer_complete = true; // Reset state
-        update_mode_display();
-        Serial.println("Client Disconnected");
-        BLEDevice::startAdvertising();
+        Serial.println("Client Disconnected.");
     }
 };
 
 void start_bluetooth()
 {
-    Serial.println("Starting BLE server...");
+    Serial.println("Starting BLE server for batch transfer...");
     BLEDevice::init(BLE_DEVICE_NAME);
     BLEDevice::setMTU(517);
 
     BLEServer *pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
-    pServer->getAdvertising()->setMinInterval(0x20);
-    pServer->getAdvertising()->setMaxInterval(0x40);
 
     BLEService *pService = pServer->createService(SERVICE_UUID);
 
-    pStatusCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID_STATUS, BLECharacteristic::PROPERTY_NOTIFY);
+    pStatusCharacteristic = pService->createCharacteristic(
+        CHARACTERISTIC_UUID_STATUS,
+        BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
     pStatusCharacteristic->addDescriptor(new BLE2902());
 
-    pDataCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID_DATA, BLECharacteristic::PROPERTY_NOTIFY);
+    pDataCharacteristic = pService->createCharacteristic(
+        CHARACTERISTIC_UUID_DATA,
+        BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
     pDataCharacteristic->addDescriptor(new BLE2902());
 
-    // pCommandCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID_COMMAND, BLECharacteristic::PROPERTY_WRITE);
-    // pCommandCharacteristic->setCallbacks(new CommandCallbacks());
-    // Accept both "Write (with response)" and "Write Without Response" for reliability
     pCommandCharacteristic = pService->createCharacteristic(
         CHARACTERISTIC_UUID_COMMAND,
         BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
@@ -443,277 +236,179 @@ void start_bluetooth()
     pAdvertising->setScanResponse(true);
     BLEDevice::startAdvertising();
 
-    Serial.println("Bluetooth Initialized.");
+    Serial.println("Bluetooth Initialized and Advertising.");
     update_display(3, "BLE Init OK");
 }
+
 void notify_chunk(const uint8_t *data, size_t size)
 {
     pDataCharacteristic->setValue((uint8_t *)data, size);
     pDataCharacteristic->notify();
+    // Add a small delay to ensure notification is sent before next operation
+    delay(10);
 }
+
+bool wait_for_acknowledgment(uint32_t timeout_ms)
+{
+    uint32_t start = millis();
+    transfer_acknowledged = false;
+    while (!transfer_acknowledged && millis() - start < timeout_ms)
+    {
+        if (!client_connected)
+            return false;
+        delay(10);
+    }
+    return transfer_acknowledged;
+}
+
 bool wait_for_next_chunk_request(uint32_t timeout_ms)
 {
     uint32_t start = millis();
-    while (millis() - start < timeout_ms)
+    next_chunk_requested = false;
+    while (!next_chunk_requested && millis() - start < timeout_ms)
     {
-        if (next_chunk_requested)
-        {
-            next_chunk_requested = false;
-            return true;
-        }
-        vTaskDelay(5 / portTICK_PERIOD_MS);
+        if (!client_connected)
+            return false;
+        delay(10);
     }
-    return false;
+    return next_chunk_requested;
 }
 
-bool send_data_with_flow_control(const uint8_t *buffer, size_t total_size, const char *data_type)
+bool send_single_file_with_flow_control(const uint8_t *buffer, size_t total_size, const char *data_type, int image_num)
 {
     if (total_size == 0)
         return true;
 
-    Serial.printf("Starting %s transfer (%u bytes)...\n", data_type, total_size);
+    // 1. Send status (size) of the current file
+    char status_buf[32];
+    sprintf(status_buf, "%s:%u", data_type, total_size);
+    pStatusCharacteristic->setValue(status_buf);
+    pStatusCharacteristic->notify();
+    Serial.printf("[Image %d] Sent STATUS: %s. Waiting for ACK...\n", image_num, status_buf);
 
+    // Small delay to ensure status notification is sent
+    delay(50);
+
+    // 2. Wait for server to acknowledge it's ready for this file
+    if (!wait_for_acknowledgment(10000))
+    {
+        Serial.printf("[Image %d] ERROR: Timeout waiting for server to acknowledge file transfer start.\n", image_num);
+        return false;
+    }
+
+    Serial.printf("[Image %d] Server ACK received. Starting %s transfer (%u bytes)...\n", image_num, data_type, total_size);
+
+    // 3. Send the file data in chunks, driven by server requests
     size_t sent = 0;
-
-    // --- FIX: Push the first chunk immediately without waiting for a request ---
-    size_t remaining = total_size - sent;
-    size_t chunk_size = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
-    Serial.printf("Pushing first %s chunk (%u bytes)...\n", data_type, chunk_size);
-    notify_chunk(buffer + sent, chunk_size);
-    sent += chunk_size;
-    // --- END FIX ---
-
-    // For all subsequent chunks, wait for the server's "Next" command
+    int chunk_count = 0;
     while (sent < total_size)
     {
-        if (!wait_for_next_chunk_request(15000)) // 15s timeout
+        // Wait for the server's "Next" command for EVERY chunk
+        if (!wait_for_next_chunk_request(15000))
         {
-            Serial.printf("ERROR: Timeout waiting for %s chunk request at byte %u/%u\n",
-                          data_type, sent, total_size);
+            Serial.printf("[Image %d] ERROR: Timeout waiting for chunk request at byte %u/%u\n", image_num, sent, total_size);
             return false;
         }
 
-        remaining = total_size - sent;
-        chunk_size = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
+        size_t remaining = total_size - sent;
+        size_t chunk_size = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
 
         notify_chunk(buffer + sent, chunk_size);
         sent += chunk_size;
+        chunk_count++;
+
+        // Print progress every 5 chunks to reduce serial spam
+        if (chunk_count % 5 == 0 || sent == total_size)
+        {
+            Serial.printf("[Image %d] Progress: %u/%u bytes\n", image_num, sent, total_size);
+        }
     }
 
-    Serial.printf("%s transfer complete (%u bytes sent).\n", data_type, sent);
+    Serial.printf("[Image %d] Transfer complete (%u bytes sent in %d chunks).\n", image_num, sent, chunk_count);
+
+    // Wait a bit to ensure the last chunk is fully processed
+    delay(100);
+
     return true;
 }
 
-void handle_capture_cycle()
+void send_batched_data()
 {
     if (!client_connected)
-        return;
-
-    // Correctly check the mode set by the hardware button
-    bool do_image = (current_mode == MODE_BOTH || current_mode == MODE_IMAGE_ONLY);
-    bool do_audio = (current_mode == MODE_BOTH || current_mode == MODE_AUDIO_ONLY);
-    bool transfer_ok = true;
-
-    camera_fb_t *fb = NULL;
-    uint32_t img_size = 0;
-    if (do_image)
     {
-        fb = esp_camera_fb_get();
-        if (!fb)
+        Serial.println("ERROR: send_batched_data called but no client connected");
+        return;
+    }
+
+    // Make sure we're starting fresh
+    next_chunk_requested = false;
+    transfer_acknowledged = false;
+
+    // Give client time to be fully ready
+    delay(500);
+
+    // 1. Notify the server how many images are in the batch
+    char count_buf[32];
+    sprintf(count_buf, "COUNT:%d", image_count);
+    pStatusCharacteristic->setValue(count_buf);
+    pStatusCharacteristic->notify();
+    Serial.printf("Notified server: %s. Waiting for ACK...\n", count_buf);
+
+    delay(50); // Ensure notification is sent
+
+    // 2. Wait for server to acknowledge it's ready for the batch
+    if (!wait_for_acknowledgment(10000))
+    {
+        Serial.println("ERROR: Server did not acknowledge batch start. Aborting.");
+        return;
+    }
+
+    Serial.println("Server acknowledged batch start. Beginning transfers...");
+
+    // 3. Loop through and send each stored image
+    for (int i = 0; i < image_count; i++)
+    {
+        if (!client_connected)
         {
-            Serial.println("Camera capture failed");
-            pStatusCharacteristic->setValue("0:0"); // Send empty status
-            pStatusCharacteristic->notify();
+            Serial.println("Client disconnected mid-batch. Aborting.");
             return;
         }
-        img_size = fb->len;
-        Serial.printf("Captured image: %u bytes\n", img_size);
+
+        Serial.printf("\n=== Sending image %d of %d (size: %u bytes) ===\n", i + 1, image_count, fb_lengths[i]);
+
+        // Verify the buffer is valid before sending
+        if (framebuffers[i] == NULL)
+        {
+            Serial.printf("ERROR: Image %d buffer is NULL!\n", i);
+            continue;
+        }
+
+        if (!send_single_file_with_flow_control(framebuffers[i], fb_lengths[i], "IMAGE", i + 1))
+        {
+            Serial.printf("Failed to send image %d. Aborting batch.\n", i + 1);
+            break;
+        }
+
+        // Add delay between images to ensure clean separation
+        delay(500);
     }
 
-    uint32_t total_audio_size = 0;
-    byte *audio_buffer = NULL;
-    if (do_audio)
+    Serial.println("\n=== Batch Transfer Complete ===");
+
+    // Free all memory and reset the counter ONLY after the entire batch is sent
+    for (int i = 0; i < image_count; i++)
     {
-        const int num_samples = RECORD_DURATION * SAMPLE_RATE;
-        const uint32_t audio_data_size = num_samples * 16 / 8;
-        total_audio_size = HEADER_SIZE + audio_data_size;
-
-        audio_buffer = (byte *)malloc(total_audio_size);
-        if (!audio_buffer)
+        if (framebuffers[i] != NULL)
         {
-            Serial.println("Failed to allocate memory for audio buffer!");
-            total_audio_size = 0; // Ensure we don't try to send it
-        }
-        else
-        {
-            create_wav_header(audio_buffer, audio_data_size, 16);
-            size_t bytes_read = 0;
-            i2s_read(I2S_NUM_1, audio_buffer + HEADER_SIZE, audio_data_size, &bytes_read, portMAX_DELAY);
-            Serial.printf("Recorded audio: %u bytes\n", total_audio_size);
-        }
-    }
-
-    // Send status notification. The server is guaranteed to be ready.
-    char status_buf[32];
-    sprintf(status_buf, "%u:%u", img_size, total_audio_size);
-    pStatusCharacteristic->setValue(status_buf);
-    pStatusCharacteristic->notify();
-    Serial.printf("Sent STATUS: %s. Starting transfer...\n", status_buf);
-
-    if (do_image && img_size > 0)
-    {
-        if (!send_data_with_flow_control(fb->buf, fb->len, "image"))
-        {
-            transfer_ok = false;
+            // Use heap_caps_free for PSRAM allocated memory
+            heap_caps_free(framebuffers[i]);
+            framebuffers[i] = NULL;
+            fb_lengths[i] = 0;
         }
     }
-    if (fb)
-        esp_camera_fb_return(fb);
+    image_count = 0;
 
-    if (transfer_ok && do_audio && total_audio_size > 0)
-    {
-        if (!send_data_with_flow_control(audio_buffer, total_audio_size, "audio"))
-        {
-            transfer_ok = false;
-        }
-    }
-    if (audio_buffer)
-        free(audio_buffer);
-
-    if (!transfer_ok)
-    {
-        // If the transfer fails, reset state so the server can re-trigger
-        Serial.println("Transfer failed mid-stream. Resetting state.");
-        transfer_complete = true;
-    }
-    // Otherwise, wait for the server's 'C' command to set transfer_complete = true
-}
-```
----
-## File: src/camera_handler.cpp
-
-```cpp
-#include "globals.h"
-#include "display_handler.h" // For updating display during init
-
-void init_camera()
-{
-    camera_config_t config;
-    config.ledc_channel = LEDC_CHANNEL_0;
-    config.ledc_timer = LEDC_TIMER_0;
-    config.pin_d0 = Y2_GPIO_NUM;
-    config.pin_d1 = Y3_GPIO_NUM;
-    config.pin_d2 = Y4_GPIO_NUM;
-    config.pin_d3 = Y5_GPIO_NUM;
-    config.pin_d4 = Y6_GPIO_NUM;
-    config.pin_d5 = Y7_GPIO_NUM;
-    config.pin_d6 = Y8_GPIO_NUM;
-    config.pin_d7 = Y9_GPIO_NUM;
-    config.pin_xclk = XCLK_GPIO_NUM;
-    config.pin_pclk = PCLK_GPIO_NUM;
-    config.pin_vsync = VSYNC_GPIO_NUM;
-    config.pin_href = HREF_GPIO_NUM;
-    config.pin_sccb_sda = SIOD_GPIO_NUM;
-    config.pin_sccb_scl = SIOC_GPIO_NUM;
-    config.pin_pwdn = PWDN_GPIO_NUM;
-    config.pin_reset = RESET_GPIO_NUM;
-    config.xclk_freq_hz = 20000000;
-    config.pixel_format = PIXFORMAT_JPEG;
-
-    if (psramFound())
-    {
-        config.frame_size = FRAMESIZE_VGA;
-        config.jpeg_quality = 12;
-        config.fb_count = 2;
-        config.fb_location = CAMERA_FB_IN_PSRAM;
-    }
-    else
-    {
-        config.frame_size = FRAMESIZE_SVGA;
-        config.jpeg_quality = 12;
-        config.fb_count = 1;
-        config.fb_location = CAMERA_FB_IN_DRAM;
-    }
-
-    if (esp_camera_init(&config) != ESP_OK)
-    {
-        update_display(2, "Cam FAIL");
-        Serial.println("Cam Init Failed!");
-        return;
-    }
-    update_display(2, "Cam Init OK");
-    Serial.println("Camera Initialized.");
-}
-```
----
-## File: src/display_handler.cpp
-
-```cpp
-#include "globals.h"
-#include "display_handler.h"
-
-void init_display()
-{
-    Wire.begin(I2C_SDA, I2C_SCL);
-    display.init();
-    display.flipScreenVertically();
-    display.setFont(ArialMT_Plain_10);
-    display.setTextAlignment(TEXT_ALIGN_LEFT);
-    display.clear();
-    update_display(0, "OLED Init OK");
-    Serial.println("OLED Initialized.");
-}
-
-void update_display(int line, const char *text, bool do_display)
-{
-    display.drawString(0, line * 10, text);
-    if (do_display)
-        display.display();
-}
-
-void update_mode_display()
-{
-    display.clear();
-    char mode_buf[32];
-    sprintf(mode_buf, "Mode: %s", mode_names[(int)current_mode]);
-    update_display(0, mode_buf, false);
-    if (client_connected)
-    {
-        update_display(2, "Status: Connected", true);
-    }
-    else
-    {
-        update_display(2, "Status: Waiting...", true);
-    }
-}
-```
----
-## File: src/hardware_handler.cpp
-
-```cpp
-#include "hardware_handler.h"
-
-portMUX_TYPE buttonMux = portMUX_INITIALIZER_UNLOCKED;
-volatile unsigned long last_interrupt_time = 0;
-
-void init_hardware()
-{
-    // Button setup for changing modes
-    pinMode(BTN_GPIO_NUM, INPUT);
-    attachInterrupt(digitalPinToInterrupt(BTN_GPIO_NUM), handle_button_press, FALLING);
-}
-
-void IRAM_ATTR handle_button_press()
-{
-    portENTER_CRITICAL_ISR(&buttonMux);
-    unsigned long interrupt_time = millis();
-    if (interrupt_time - last_interrupt_time > 200)
-    { // 200ms debounce
-        current_mode = (CaptureMode)(((int)current_mode + 1) % MODE_COUNT);
-        mode_changed = true;
-    }
-    last_interrupt_time = interrupt_time;
-    portEXIT_CRITICAL_ISR(&buttonMux);
+    Serial.println("Memory freed and image count reset.");
 }
 ```
 ---
@@ -721,64 +416,163 @@ void IRAM_ATTR handle_button_press()
 
 ```cpp
 #include "globals.h"
-#include "hardware_handler.h" // For button handling
+#include "display_handler.h"
+#include "esp_heap_caps.h"
+
+// --- RTC (Deep Sleep) Memory ---
+RTC_DATA_ATTR int image_count = 0;
 
 // Define global objects
 SSD1306 display(0x3c, I2C_SDA, I2C_SCL, GEOMETRY_128_64);
 
 // Define global state flags
-volatile bool capture_requested = false;
 volatile bool client_connected = false;
-volatile CaptureMode current_mode = MODE_IMAGE_ONLY;
-volatile bool mode_changed = true; // Set to true to display initial mode
 volatile bool next_chunk_requested = false;
-volatile bool transfer_complete = true; // Start in a ready state
+volatile bool transfer_acknowledged = false;
 
-const char *mode_names[] = {"Send Both", "Image Only", "Audio Only"};
+// Forward declaration from bluetooth_handler.cpp
+extern RTC_DATA_ATTR uint8_t *framebuffers[IMAGE_BATCH_SIZE];
+extern RTC_DATA_ATTR size_t fb_lengths[IMAGE_BATCH_SIZE];
+
+bool store_image_in_psram()
+{
+  if (image_count >= IMAGE_BATCH_SIZE)
+  {
+    Serial.println("PSRAM buffer is full.");
+    return false;
+  }
+
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb)
+  {
+    Serial.println("Camera capture failed");
+    return false;
+  }
+
+  // Use heap_caps_malloc to allocate from PSRAM explicitly
+  framebuffers[image_count] = (uint8_t *)heap_caps_malloc(fb->len, MALLOC_CAP_SPIRAM);
+  if (!framebuffers[image_count])
+  {
+    Serial.println("PSRAM malloc failed");
+    esp_camera_fb_return(fb);
+    return false;
+  }
+
+  // Copy the image data
+  memcpy(framebuffers[image_count], fb->buf, fb->len);
+  fb_lengths[image_count] = fb->len;
+
+  Serial.printf("Stored image %d (%u bytes) in PSRAM at %p.\n",
+                image_count + 1, fb_lengths[image_count], framebuffers[image_count]);
+
+  esp_camera_fb_return(fb);
+  image_count++;
+  return true;
+}
+
+void enter_deep_sleep(bool camera_was_active)
+{
+  if (camera_was_active)
+  {
+    deinit_camera();
+  }
+  display.clear();
+  display.drawString(0, 0, "Sleeping...");
+  display.display();
+  Serial.printf("Entering deep sleep for %d seconds...\n\n", DEEP_SLEEP_SECONDS);
+  esp_sleep_enable_timer_wakeup(DEEP_SLEEP_SECONDS * 1000000);
+  esp_deep_sleep_start();
+}
 
 void setup()
 {
   Serial.begin(115200);
-  Serial.println("\n\n--- T-Camera Refactored BLE v3.1 (Server-Driven) ---");
+  Serial.println("\n--- T-Camera BLE Batch Transfer ---");
 
-  init_hardware(); // Sets up the button
+  // Print heap info
+  Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
+  Serial.printf("Free PSRAM: %d bytes\n", ESP.getFreePsram());
+
+  bool camera_initialized_this_cycle = false;
+
   init_display();
-  init_camera();
-  init_audio();
-  start_bluetooth();
+  char status_buf[32];
+  sprintf(status_buf, "Images stored: %d/%d", image_count, IMAGE_BATCH_SIZE);
+  update_display(0, "Device Woke Up!", false);
+  update_display(1, status_buf, true);
 
-  Serial.println("Setup Complete. Waiting for BLE client...");
+  // Verify stored images are still valid after wake
+  if (image_count > 0)
+  {
+    Serial.printf("Verifying %d stored images:\n", image_count);
+    for (int i = 0; i < image_count; i++)
+    {
+      Serial.printf("  Image %d: %p, size: %u bytes\n",
+                    i + 1, framebuffers[i], fb_lengths[i]);
+    }
+  }
+
+  // If batch is not full, capture an image and go back to sleep
+  if (image_count < IMAGE_BATCH_SIZE)
+  {
+    init_camera();
+    camera_initialized_this_cycle = true;
+
+    if (store_image_in_psram())
+    {
+      sprintf(status_buf, "Success! Now have %d", image_count);
+      update_display(2, status_buf, true);
+    }
+    else
+    {
+      update_display(2, "Capture FAILED", true);
+    }
+    delay(1000);
+    enter_deep_sleep(camera_initialized_this_cycle);
+  }
+  // If batch is full, start BLE and wait for server to retrieve data
+  else
+  {
+    update_display(2, "Batch full. Starting BLE", true);
+    start_bluetooth();
+
+    Serial.println("Advertising started. Waiting for connection...");
+    delay(500);
+
+    uint32_t start_time = millis();
+    // Wait for a client to connect for up to 60 seconds
+    while (!client_connected && (millis() - start_time < 60000))
+    {
+      delay(100);
+    }
+
+    if (client_connected)
+    {
+      Serial.println("Client connected. Waiting for client to be ready...");
+      delay(3000); // Give the client time to set up notifications
+
+      Serial.println("Starting batch data transfer...");
+      send_batched_data();
+
+      // Wait for client to disconnect after transfer
+      uint32_t disconnect_wait_start = millis();
+      while (client_connected && (millis() - disconnect_wait_start < 10000))
+      {
+        delay(100);
+      }
+    }
+    else
+    {
+      Serial.println("No client connected within 60s timeout. Retaining data.");
+    }
+
+    enter_deep_sleep(camera_initialized_this_cycle);
+  }
 }
 
 void loop()
 {
-  // Check if the physical button was pressed to change modes
-  if (mode_changed)
-  {
-    portENTER_CRITICAL(&buttonMux);
-    mode_changed = false;
-    portEXIT_CRITICAL(&buttonMux);
-
-    Serial.printf("Mode -> %s\n", mode_names[(int)current_mode]);
-    update_mode_display();
-  }
-
-  // Check if the server has requested a capture cycle
-  if (capture_requested)
-  {
-    // A capture cycle has been requested by the server
-    transfer_complete = false; // Mark that a transfer is now active
-    capture_requested = false; // Reset the request flag
-
-    handle_capture_cycle();
-
-    // After this, the device waits for the server to send a 'C' (Complete) command.
-    // The BLE callback will see this and set transfer_complete = true,
-    // making the device ready for the next trigger from the server.
-  }
-
-  // Small delay to prevent busy-waiting
-  delay(10);
+  // Intentionally empty. All logic is in setup() due to deep sleep.
 }
 ```
 ---
@@ -790,14 +584,19 @@ import datetime
 import os
 import threading
 import functools
-from flask import Flask, render_template, send_from_directory
+import sqlite3
+from flask import Flask, render_template, send_from_directory, jsonify
 from bleak import BleakScanner, BleakClient
+from bleak.exc import BleakError
 
 # --- CONFIGURATION ---
-RECONNECT_DELAY_SECONDS = 5
-CAPTURE_INTERVAL_SECONDS = 2  # How often to request a capture
 FLASK_PORT = 5550
-DEVICE_NAME = "T-Camera-BLE"
+# FIX: Accept both device names since the ESP32 might advertise as either
+DEVICE_NAMES = ["T-Camera-BLE-Batch", "T-Camera-BLE"]
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+IMGS_FOLDER_NAME = 'imgs'
+IMGS_PATH = os.path.join(ROOT_DIR, IMGS_FOLDER_NAME)
+DB_PATH = os.path.join(ROOT_DIR, 'captures.db')
 
 # --- BLE UUIDS ---
 SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -807,54 +606,54 @@ CHARACTERISTIC_UUID_COMMAND = "a244c201-1fb5-459e-8fcc-c5c9c331914b"
 
 # --- PROTOCOL COMMANDS ---
 CMD_NEXT_CHUNK = b'N'
-CMD_TRANSFER_COMPLETE = b'C'
-CMD_TRIGGER_CAPTURE = b'T'
+CMD_ACKNOWLEDGE = b'A'  # Acknowledge readiness for a file or batch
 
 # --- WEB SERVER & GLOBAL STATE ---
-app = Flask(__name__)
-STATIC_FOLDER = 'static'
-LATEST_IMAGE_FILENAME = 'latest.jpg'
-LATEST_AUDIO_FILENAME = 'latest.wav'
-LATEST_IMAGE_PATH = os.path.join(STATIC_FOLDER, LATEST_IMAGE_FILENAME)
-LATEST_AUDIO_PATH = os.path.join(STATIC_FOLDER, LATEST_AUDIO_FILENAME)
+app = Flask(__name__, static_folder=IMGS_FOLDER_NAME)
 server_state = {"status": "Initializing..."}
-transfer_in_progress = asyncio.Event()
-data_queue = asyncio.Queue()
+data_queue = None  # Will be initialized in the async context
+# Use an asyncio.Event to signal when the target device is found
+device_found_event = None  # Will be initialized in the async context
+found_device = None
 
-# Ensure static folder exists
-if not os.path.exists(STATIC_FOLDER):
-    os.makedirs(STATIC_FOLDER)
+# --- DATABASE SETUP (Unchanged) ---
 
 
-async def transfer_data(client, expected_size, buffer, data_type):
-    """
-    Receives data from the ESP32. It waits for the first chunk to be "pushed"
-    by the device, then "pulls" the remaining chunks.
-    """
+def setup_database():
+    if not os.path.exists(IMGS_PATH):
+        os.makedirs(IMGS_PATH)
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS captures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            image_path TEXT NOT NULL,
+            gps_lat REAL,
+            gps_lon REAL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+
+def db_insert_capture(timestamp, image_path, gps_lat=None, gps_lon=None):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO captures (timestamp, image_path, gps_lat, gps_lon) VALUES (?, ?, ?, ?)",
+        (timestamp, image_path, gps_lat, gps_lon)
+    )
+    conn.commit()
+    conn.close()
+
+# --- BLE LOGIC (Rewritten) ---
+
+
+async def transfer_file_data(client, expected_size, buffer, data_type):
     if expected_size == 0:
         return True
-
-    print(f"Starting {data_type} transfer. Expecting {expected_size} bytes.")
     bytes_received = 0
-
-    # --- FIX: Wait for the first chunk to be "pushed" by the ESP32 ---
-    try:
-        print("Waiting for the first pushed chunk...")
-        first_chunk = await asyncio.wait_for(data_queue.get(), timeout=15.0)
-        buffer.extend(first_chunk)
-        bytes_received = len(buffer)
-        data_queue.task_done()
-        print(f"Received first pushed chunk ({len(first_chunk)} bytes).")
-    except asyncio.TimeoutError:
-        print(
-            f"ERROR: Timeout waiting for the first pushed {data_type} data chunk.")
-        return False
-    except Exception as e:
-        print(f"ERROR receiving first chunk: {e}")
-        return False
-    # --- END FIX ---
-
-    # Now, pull the rest of the data
     while bytes_received < expected_size:
         try:
             await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_NEXT_CHUNK, response=False)
@@ -862,158 +661,392 @@ async def transfer_data(client, expected_size, buffer, data_type):
             buffer.extend(chunk)
             bytes_received = len(buffer)
             data_queue.task_done()
+            print(
+                f"Receiving {data_type}: {bytes_received}/{expected_size} bytes", end='\r')
         except asyncio.TimeoutError:
             print(
-                f"ERROR: Timeout waiting for {data_type} data chunk at {bytes_received}/{expected_size} bytes.")
+                f"\nERROR: Timeout waiting for {data_type} data at {bytes_received}/{expected_size} bytes.")
             return False
-        except Exception as e:
-            print(f"ERROR in transfer_data loop: {e}")
-            return False
-
-    print(f"-> {data_type} transfer complete ({bytes_received} bytes received).")
+    print(
+        f"\n-> {data_type} transfer complete ({bytes_received} bytes received).")
     return True
 
 
 def data_notification_handler(sender, data):
-    """Callback that puts received data chunks into the async queue."""
-    data_queue.put_nowait(data)
+    if data_queue:
+        data_queue.put_nowait(data)
 
 
 async def status_notification_handler(sender, data, client):
-    """
-    Callback that handles the initial status update, then starts the
-    data transfer process for image and audio.
-    """
     try:
-        status_str = data.decode('utf-8')
-        img_size_str, audio_size_str = status_str.split(':')
-        img_size = int(img_size_str)
-        audio_size = int(audio_size_str)
+        status_str = data.decode('utf-8').strip()
+        print(f"\n[STATUS] Received: {status_str}")
 
-        print(
-            f"\n[STATUS] Received: Image: {img_size} bytes, Audio: {audio_size} bytes.")
-        server_state["status"] = f"Receiving: Img({img_size}B) Aud({audio_size}B)"
+        if status_str.startswith("COUNT:"):
+            parts = status_str.split(':')
+            image_count = int(parts[1])
+            server_state["status"] = f"Batch of {image_count} images detected. Acknowledging."
+            print(server_state["status"])
+            # Send acknowledgment
+            await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_ACKNOWLEDGE, response=False)
+            print("Sent ACK for batch start")
 
-        # Transfer Image data
-        img_buffer = bytearray()
-        if not await transfer_data(client, img_size, img_buffer, "Image"):
-            print("Image transfer failed.")
-        elif img_size > 0:
-            with open(LATEST_IMAGE_PATH, "wb") as f:
-                f.write(img_buffer)
-            print(f"-> Saved latest image to {LATEST_IMAGE_PATH}")
+        elif status_str.startswith("IMAGE:"):
+            parts = status_str.split(':')
+            img_size = int(parts[1])
+            server_state["status"] = f"Receiving image ({img_size} bytes)..."
+            print(f"Image transfer starting. Expecting {img_size} bytes.")
+            # Send acknowledgment
+            await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_ACKNOWLEDGE, response=False)
+            print("Sent ACK for image start")
 
-        # Transfer Audio data
-        audio_buffer = bytearray()
-        if not await transfer_data(client, audio_size, audio_buffer, "Audio"):
-            print("Audio transfer failed.")
-        elif audio_size > 0:
-            with open(LATEST_AUDIO_PATH, "wb") as f:
-                f.write(audio_buffer)
-            print(f"-> Saved latest audio to {LATEST_AUDIO_PATH}")
-
+            img_buffer = bytearray()
+            if await transfer_file_data(client, img_size, img_buffer, "Image"):
+                timestamp = datetime.datetime.now()
+                filename = timestamp.strftime("%Y-%m-%d_%H-%M-%S-%f") + ".jpg"
+                filepath = os.path.join(IMGS_PATH, filename)
+                with open(filepath, "wb") as f:
+                    f.write(img_buffer)
+                db_insert_capture(timestamp.isoformat(),
+                                  os.path.join(IMGS_FOLDER_NAME, filename))
+                print(f"-> Saved image to {filepath} and logged to DB.")
+                server_state["status"] = f"Image saved: {filename}"
+            else:
+                print("Image transfer failed.")
+                server_state["status"] = "Image transfer failed"
     except Exception as e:
         print(f"Error in status_notification_handler: {e}")
-    finally:
-        # This is CRITICAL: Always acknowledge completion to unblock the ESP32.
-        print("--> Sending 'Complete' acknowledgement to ESP32.")
-        try:
-            await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_TRANSFER_COMPLETE, response=False)
-        except Exception as e:
-            print(f"Warning: Could not send 'Complete' ack: {e}")
+        import traceback
+        traceback.print_exc()
 
-        print("\n--- Cycle Complete ---")
-        # Signal to the main loop that this cycle is done.
-        transfer_in_progress.set()
+
+def detection_callback(device, advertising_data):
+    global found_device, device_found_event
+    service_uuids = advertising_data.service_uuids or []
+
+    # Check if this is our target device by name or UUID
+    is_target = False
+    if device.name:
+        for target_name in DEVICE_NAMES:
+            if target_name in device.name:
+                is_target = True
+                break
+
+    if not is_target and SERVICE_UUID.lower() in [s.lower() for s in service_uuids]:
+        is_target = True
+
+    if is_target:
+        print(f"[SCAN] Target device found: {device.address} ({device.name})")
+        if device_found_event and not device_found_event.is_set():
+            found_device = device
+            device_found_event.set()
 
 
 async def ble_communication_task():
-    """The main async task that connects to the ESP32 and drives the capture loop."""
+    global found_device, data_queue, device_found_event
+
+    # Initialize async objects in the async context
+    data_queue = asyncio.Queue()
+    device_found_event = asyncio.Event()
+
     while True:
+        server_state["status"] = f"Scanning for camera device..."
+        print(f"\n{server_state['status']}")
+
+        # Create a new scanner for each scan cycle
+        scanner = BleakScanner(detection_callback=detection_callback)
+
+        # Start the scanner
         try:
-            server_state["status"] = f"Scanning for {DEVICE_NAME}..."
-            print(server_state["status"])
-            device = await BleakScanner.find_device_by_name(DEVICE_NAME, timeout=10.0)
-
-            if not device:
-                await asyncio.sleep(RECONNECT_DELAY_SECONDS)
-                continue
-
-            async with BleakClient(device, timeout=20.0) as client:
-                if client.is_connected:
-                    print(f"Successfully connected to {device.address}")
-                    server_state["status"] = "Connected"
-
-                    # Register notification handlers
-                    status_handler_with_client = functools.partial(
-                        status_notification_handler, client=client)
-                    await client.start_notify(CHARACTERISTIC_UUID_STATUS, status_handler_with_client)
-                    await client.start_notify(CHARACTERISTIC_UUID_DATA, data_notification_handler)
-
-                    # Main server-driven capture loop
-                    while client.is_connected:
-                        print(f"Triggering new capture...")
-                        server_state["status"] = "Triggering Capture..."
-                        transfer_in_progress.clear()
-
-                        await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_TRIGGER_CAPTURE, response=True)
-
-                        # Wait for the status_handler to signal completion via the event
-                        await asyncio.wait_for(transfer_in_progress.wait(), timeout=60.0)
-
-                        server_state["status"] = "Idle, waiting for next cycle..."
-                        await asyncio.sleep(CAPTURE_INTERVAL_SECONDS)
-
-        except asyncio.TimeoutError:
-            print("Timeout during capture cycle. Retrying...")
-            server_state["status"] = "Timeout. Retrying..."
+            await scanner.start()
         except Exception as e:
-            print(f"An error occurred in ble_communication_task: {e}")
-            server_state["status"] = "Connection Lost. Retrying..."
-        finally:
-            print(
-                f"Disconnected. Retrying in {RECONNECT_DELAY_SECONDS} seconds...")
-            await asyncio.sleep(RECONNECT_DELAY_SECONDS)
+            print(f"Error starting scanner: {e}")
+            await asyncio.sleep(5)
+            continue
 
-# --- Flask Web Server Setup ---
+        # Wait until our detection_callback sets the event (with timeout)
+        try:
+            await asyncio.wait_for(device_found_event.wait(), timeout=120.0)
+        except asyncio.TimeoutError:
+            print(f"No device found after 120 seconds. Restarting scan...")
+            await scanner.stop()
+            await asyncio.sleep(2)
+            continue
+
+        # Stop the scanner now that we've found our device
+        await scanner.stop()
+
+        if found_device:
+            server_state["status"] = f"Connecting to {found_device.address}..."
+            print(server_state["status"])
+            try:
+                async with BleakClient(found_device, timeout=20.0) as client:
+                    if client.is_connected:
+                        server_state["status"] = "Connected. Setting up notifications..."
+                        print(server_state["status"])
+
+                        # Clear the data queue
+                        while not data_queue.empty():
+                            data_queue.get_nowait()
+
+                        # Create the status handler with the client
+                        status_handler_with_client = functools.partial(
+                            status_notification_handler, client=client)
+
+                        # Start notifications
+                        try:
+                            await client.start_notify(CHARACTERISTIC_UUID_STATUS, status_handler_with_client)
+                            print("STATUS notifications enabled")
+                        except Exception as e:
+                            print(f"Error enabling STATUS notifications: {e}")
+
+                        try:
+                            await client.start_notify(CHARACTERISTIC_UUID_DATA, data_notification_handler)
+                            print("DATA notifications enabled")
+                        except Exception as e:
+                            print(f"Error enabling DATA notifications: {e}")
+
+                        server_state["status"] = "Ready. Waiting for device to send data..."
+                        print(server_state["status"])
+
+                        # Keep the connection alive
+                        while client.is_connected:
+                            await asyncio.sleep(1)
+
+                        print("Client disconnected")
+
+            except BleakError as e:
+                server_state["status"] = f"Connection Error: {e}"
+                print(f"BLE error occurred: {e}")
+            except Exception as e:
+                server_state["status"] = f"An unexpected error occurred: {e}"
+                print(f"An unexpected error occurred: {e}")
+                import traceback
+                traceback.print_exc()
+            finally:
+                server_state["status"] = "Disconnected. Resuming scan."
+                print(server_state["status"])
+                # Reset for the next cycle
+                device_found_event.clear()
+                found_device = None
+                # Add a small delay before restarting the scan
+                await asyncio.sleep(2)
+        else:
+            print("Event was set but no device was found. Resetting...")
+            device_found_event.clear()
+            await asyncio.sleep(2)
 
 
+# --- Flask Web Server ---
 @app.route('/')
 def index():
-    """Serves the main HTML page."""
-    return render_template('index.html', status=server_state.get("status"))
+    return render_template('index.html')
 
 
-@app.route(f'/{LATEST_IMAGE_FILENAME}')
-def latest_image():
-    """Serves the latest captured image."""
-    return send_from_directory(STATIC_FOLDER, LATEST_IMAGE_FILENAME, as_attachment=False, mimetype='image/jpeg')
+@app.route('/api/status')
+def api_status():
+    return jsonify(server_state)
+
+
+@app.route('/api/captures')
+def api_captures():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    captures = cursor.execute(
+        "SELECT * FROM captures ORDER BY timestamp DESC").fetchall()
+    conn.close()
+    return jsonify([dict(row) for row in captures])
+
+
+@app.route('/imgs/<path:filename>')
+def serve_image(filename):
+    return send_from_directory(IMGS_PATH, filename)
 
 
 def run_flask_app():
-    """Runs the Flask app in a separate thread."""
     print(f"Starting Flask web server on http://0.0.0.0:{FLASK_PORT}")
     app.run(host='0.0.0.0', port=FLASK_PORT, debug=False)
 
 
 if __name__ == '__main__':
-    # Start the Flask server in a background thread
+    setup_database()
+
+    # Start Flask in a separate thread
     flask_thread = threading.Thread(target=run_flask_app, daemon=True)
     flask_thread.start()
 
-    # Start the main BLE communication loop
-    print("Starting BLE communication task...")
+    # Give Flask a moment to start
+    import time
+    time.sleep(1)
+
+    # Run the BLE communication task
     try:
+        print("Starting BLE communication task...")
         asyncio.run(ble_communication_task())
     except KeyboardInterrupt:
-        print("Program stopped by user.")
+        print("\nProgram stopped by user.")
+    except Exception as e:
+        print(f"Fatal error in BLE task: {e}")
+        import traceback
+        traceback.print_exc()
 
 ```
 ---
-## File: srv/reqs.txt
+## File: srv/templates/index.html
 
-```txt
-flask
-bleak
+```html
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>T-Camera BLE Dashboard</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f0f2f5;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: auto;
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        h1,
+        h2 {
+            color: #1c1e21;
+        }
+
+        #status-bar {
+            padding: 10px 15px;
+            background-color: #e7f3ff;
+            border: 1px solid #cce5ff;
+            color: #004085;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+
+        #gallery {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 15px;
+        }
+
+        .card {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        .card img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .card-info {
+            padding: 10px;
+            background-color: #fafafa;
+            font-size: 0.9em;
+        }
+
+        .card-info p {
+            margin: 0 0 5px 0;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>T-Camera BLE Dashboard</h1>
+        <div id="status-bar">
+            <strong>Status:</strong> <span id="status-text">Loading...</span>
+        </div>
+
+        <h2>Captured Images</h2>
+        <div id="gallery">
+            <p>No images loaded yet. Waiting for data...</p>
+        </div>
+    </div>
+
+    <script>
+        const gallery = document.getElementById('gallery');
+        const statusText = document.getElementById('status-text');
+
+        async function fetchStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                statusText.textContent = data.status || 'N/A';
+            } catch (error) {
+                console.error('Error fetching status:', error);
+                statusText.textContent = 'Error loading status.';
+            }
+        }
+
+        async function fetchCaptures() {
+            try {
+                const response = await fetch('/api/captures');
+                const captures = await response.json();
+
+                if (captures.length === 0) {
+                    gallery.innerHTML = '<p>No images have been captured yet.</p>';
+                    return;
+                }
+
+                gallery.innerHTML = ''; // Clear previous content
+                captures.forEach(capture => {
+                    const card = document.createElement('div');
+                    card.className = 'card';
+
+                    const img = document.createElement('img');
+                    img.src = capture.image_path;
+                    img.alt = `Capture from ${capture.timestamp}`;
+
+                    const info = document.createElement('div');
+                    info.className = 'card-info';
+
+                    const timestamp = new Date(capture.timestamp).toLocaleString();
+                    info.innerHTML = `<p><strong>Timestamp:</strong> ${timestamp}</p>`;
+
+                    if (capture.gps_lat && capture.gps_lon) {
+                        info.innerHTML += `<p><strong>GPS:</strong> ${capture.gps_lat}, ${capture.gps_lon}</p>`;
+                    }
+
+                    card.appendChild(img);
+                    card.appendChild(info);
+                    gallery.appendChild(card);
+                });
+            } catch (error) {
+                console.error('Error fetching captures:', error);
+                gallery.innerHTML = '<p>Error loading images.</p>';
+            }
+        }
+
+        // Fetch data every 3 seconds
+        setInterval(() => {
+            fetchStatus();
+            fetchCaptures();
+        }, 3000);
+
+        // Initial load
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchStatus();
+            fetchCaptures();
+        });
+    </script>
+</body>
+
+</html>
 ```
 ---

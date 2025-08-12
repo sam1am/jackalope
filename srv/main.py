@@ -3,14 +3,19 @@ import datetime
 import os
 import threading
 import functools
-from flask import Flask, render_template, send_from_directory
+import sqlite3
+from flask import Flask, render_template, send_from_directory, jsonify
 from bleak import BleakScanner, BleakClient
+from bleak.exc import BleakError
+import time
 
 # --- CONFIGURATION ---
-RECONNECT_DELAY_SECONDS = 5
-CAPTURE_INTERVAL_SECONDS = 2  # How often to request a capture
 FLASK_PORT = 5550
-DEVICE_NAME = "T-Camera-BLE"
+DEVICE_NAMES = ["T-Camera-BLE-Batch", "T-Camera-BLE"]
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+IMGS_FOLDER_NAME = 'imgs'
+IMGS_PATH = os.path.join(ROOT_DIR, IMGS_FOLDER_NAME)
+DB_PATH = os.path.join(ROOT_DIR, 'captures.db')
 
 # --- BLE UUIDS ---
 SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -20,203 +25,263 @@ CHARACTERISTIC_UUID_COMMAND = "a244c201-1fb5-459e-8fcc-c5c9c331914b"
 
 # --- PROTOCOL COMMANDS ---
 CMD_NEXT_CHUNK = b'N'
-CMD_TRANSFER_COMPLETE = b'C'
-CMD_TRIGGER_CAPTURE = b'T'
+CMD_ACKNOWLEDGE = b'A'
 
 # --- WEB SERVER & GLOBAL STATE ---
-app = Flask(__name__)
-STATIC_FOLDER = 'static'
-LATEST_IMAGE_FILENAME = 'latest.jpg'
-LATEST_AUDIO_FILENAME = 'latest.wav'
-LATEST_IMAGE_PATH = os.path.join(STATIC_FOLDER, LATEST_IMAGE_FILENAME)
-LATEST_AUDIO_PATH = os.path.join(STATIC_FOLDER, LATEST_AUDIO_FILENAME)
+app = Flask(__name__, static_folder=IMGS_FOLDER_NAME)
 server_state = {"status": "Initializing..."}
-transfer_in_progress = asyncio.Event()
-data_queue = asyncio.Queue()
+data_queue = None
+device_found_event = None
+found_device = None
 
-# Ensure static folder exists
-if not os.path.exists(STATIC_FOLDER):
-    os.makedirs(STATIC_FOLDER)
+# --- DATABASE SETUP ---
 
 
-async def transfer_data(client, expected_size, buffer, data_type):
-    """
-    Receives data from the ESP32. It waits for the first chunk to be "pushed"
-    by the device, then "pulls" the remaining chunks.
-    """
+def setup_database():
+    if not os.path.exists(IMGS_PATH):
+        os.makedirs(IMGS_PATH)
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS captures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            image_path TEXT NOT NULL,
+            gps_lat REAL,
+            gps_lon REAL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+
+def db_insert_capture(timestamp, image_path, gps_lat=None, gps_lon=None):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO captures (timestamp, image_path, gps_lat, gps_lon) VALUES (?, ?, ?, ?)",
+        (timestamp, image_path, gps_lat, gps_lon)
+    )
+    conn.commit()
+    conn.close()
+
+# --- BLE LOGIC ---
+
+
+async def transfer_file_data(client, expected_size, buffer, data_type):
     if expected_size == 0:
         return True
-
-    print(f"Starting {data_type} transfer. Expecting {expected_size} bytes.")
     bytes_received = 0
-
-    # --- FIX: Wait for the first chunk to be "pushed" by the ESP32 ---
     try:
-        print("Waiting for the first pushed chunk...")
+        # --- MODIFIED LOGIC ---
+        # 1. Wait for the FIRST chunk. The ESP32 sends this automatically after we ACK the file start.
+        print(f"Waiting for first chunk of {data_type}...")
         first_chunk = await asyncio.wait_for(data_queue.get(), timeout=15.0)
         buffer.extend(first_chunk)
         bytes_received = len(buffer)
         data_queue.task_done()
-        print(f"Received first pushed chunk ({len(first_chunk)} bytes).")
-    except asyncio.TimeoutError:
         print(
-            f"ERROR: Timeout waiting for the first pushed {data_type} data chunk.")
-        return False
-    except Exception as e:
-        print(f"ERROR receiving first chunk: {e}")
-        return False
-    # --- END FIX ---
+            f"Receiving {data_type}: {bytes_received}/{expected_size} bytes", end='\r')
 
-    # Now, pull the rest of the data
-    while bytes_received < expected_size:
-        try:
+        # 2. Now loop for the rest of the data, requesting each subsequent chunk with 'N'.
+        while bytes_received < expected_size:
             await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_NEXT_CHUNK, response=False)
             chunk = await asyncio.wait_for(data_queue.get(), timeout=15.0)
             buffer.extend(chunk)
             bytes_received = len(buffer)
             data_queue.task_done()
-        except asyncio.TimeoutError:
             print(
-                f"ERROR: Timeout waiting for {data_type} data chunk at {bytes_received}/{expected_size} bytes.")
-            return False
-        except Exception as e:
-            print(f"ERROR in transfer_data loop: {e}")
-            return False
+                f"Receiving {data_type}: {bytes_received}/{expected_size} bytes", end='\r')
+        # --- END MODIFIED LOGIC ---
 
-    print(f"-> {data_type} transfer complete ({bytes_received} bytes received).")
+    except asyncio.TimeoutError:
+        print(
+            f"\nERROR: Timeout waiting for {data_type} data at {bytes_received}/{expected_size} bytes.")
+        return False
+
+    print(
+        f"\n-> {data_type} transfer complete ({bytes_received} bytes received).")
     return True
 
 
 def data_notification_handler(sender, data):
-    """Callback that puts received data chunks into the async queue."""
-    data_queue.put_nowait(data)
+    if data_queue:
+        data_queue.put_nowait(data)
 
 
 async def status_notification_handler(sender, data, client):
-    """
-    Callback that handles the initial status update, then starts the
-    data transfer process for image and audio.
-    """
     try:
-        status_str = data.decode('utf-8')
-        img_size_str, audio_size_str = status_str.split(':')
-        img_size = int(img_size_str)
-        audio_size = int(audio_size_str)
+        status_str = data.decode('utf-8').strip()
+        print(f"\n[STATUS] Received: {status_str}")
 
-        print(
-            f"\n[STATUS] Received: Image: {img_size} bytes, Audio: {audio_size} bytes.")
-        server_state["status"] = f"Receiving: Img({img_size}B) Aud({audio_size}B)"
+        if status_str.startswith("COUNT:"):
+            parts = status_str.split(':')
+            image_count = int(parts[1])
+            server_state["status"] = f"Batch of {image_count} images detected. Acknowledging."
+            print(server_state["status"])
+            await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_ACKNOWLEDGE, response=False)
+            print("Sent ACK for batch start")
 
-        # Transfer Image data
-        img_buffer = bytearray()
-        if not await transfer_data(client, img_size, img_buffer, "Image"):
-            print("Image transfer failed.")
-        elif img_size > 0:
-            with open(LATEST_IMAGE_PATH, "wb") as f:
-                f.write(img_buffer)
-            print(f"-> Saved latest image to {LATEST_IMAGE_PATH}")
+        elif status_str.startswith("IMAGE:"):
+            parts = status_str.split(':')
+            img_size = int(parts[1])
+            server_state["status"] = f"Receiving image ({img_size} bytes)..."
+            print(f"Image transfer starting. Expecting {img_size} bytes.")
+            await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_ACKNOWLEDGE, response=False)
+            print("Sent ACK for image start")
 
-        # Transfer Audio data
-        audio_buffer = bytearray()
-        if not await transfer_data(client, audio_size, audio_buffer, "Audio"):
-            print("Audio transfer failed.")
-        elif audio_size > 0:
-            with open(LATEST_AUDIO_PATH, "wb") as f:
-                f.write(audio_buffer)
-            print(f"-> Saved latest audio to {LATEST_AUDIO_PATH}")
-
+            img_buffer = bytearray()
+            if await transfer_file_data(client, img_size, img_buffer, "Image"):
+                timestamp = datetime.datetime.now()
+                filename = timestamp.strftime("%Y-%m-%d_%H-%M-%S-%f") + ".jpg"
+                filepath = os.path.join(IMGS_PATH, filename)
+                with open(filepath, "wb") as f:
+                    f.write(img_buffer)
+                db_insert_capture(timestamp.isoformat(),
+                                  os.path.join(IMGS_FOLDER_NAME, filename))
+                print(f"-> Saved image to {filepath} and logged to DB.")
+                server_state["status"] = f"Image saved: {filename}"
+            else:
+                print("Image transfer failed.")
+                server_state["status"] = "Image transfer failed"
     except Exception as e:
         print(f"Error in status_notification_handler: {e}")
-    finally:
-        # This is CRITICAL: Always acknowledge completion to unblock the ESP32.
-        print("--> Sending 'Complete' acknowledgement to ESP32.")
-        try:
-            await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_TRANSFER_COMPLETE, response=False)
-        except Exception as e:
-            print(f"Warning: Could not send 'Complete' ack: {e}")
+        import traceback
+        traceback.print_exc()
 
-        print("\n--- Cycle Complete ---")
-        # Signal to the main loop that this cycle is done.
-        transfer_in_progress.set()
+
+def detection_callback(device, advertising_data):
+    global found_device, device_found_event
+    service_uuids = advertising_data.service_uuids or []
+
+    is_target = False
+    if device.name:
+        for target_name in DEVICE_NAMES:
+            if target_name in device.name:
+                is_target = True
+                break
+
+    if not is_target and SERVICE_UUID.lower() in [s.lower() for s in service_uuids]:
+        is_target = True
+
+    if is_target:
+        print(f"[SCAN] Target device found: {device.address} ({device.name})")
+        if device_found_event and not device_found_event.is_set():
+            found_device = device
+            device_found_event.set()
 
 
 async def ble_communication_task():
-    """The main async task that connects to the ESP32 and drives the capture loop."""
+    global found_device, data_queue, device_found_event
+    data_queue = asyncio.Queue()
+    device_found_event = asyncio.Event()
+
     while True:
+        server_state["status"] = f"Scanning for camera device..."
+        print(f"\n{server_state['status']}")
+
+        scanner = BleakScanner(detection_callback=detection_callback)
+
         try:
-            server_state["status"] = f"Scanning for {DEVICE_NAME}..."
-            print(server_state["status"])
-            device = await BleakScanner.find_device_by_name(DEVICE_NAME, timeout=10.0)
-
-            if not device:
-                await asyncio.sleep(RECONNECT_DELAY_SECONDS)
-                continue
-
-            async with BleakClient(device, timeout=20.0) as client:
-                if client.is_connected:
-                    print(f"Successfully connected to {device.address}")
-                    server_state["status"] = "Connected"
-
-                    # Register notification handlers
-                    status_handler_with_client = functools.partial(
-                        status_notification_handler, client=client)
-                    await client.start_notify(CHARACTERISTIC_UUID_STATUS, status_handler_with_client)
-                    await client.start_notify(CHARACTERISTIC_UUID_DATA, data_notification_handler)
-
-                    # Main server-driven capture loop
-                    while client.is_connected:
-                        print(f"Triggering new capture...")
-                        server_state["status"] = "Triggering Capture..."
-                        transfer_in_progress.clear()
-
-                        await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_TRIGGER_CAPTURE, response=True)
-
-                        # Wait for the status_handler to signal completion via the event
-                        await asyncio.wait_for(transfer_in_progress.wait(), timeout=60.0)
-
-                        server_state["status"] = "Idle, waiting for next cycle..."
-                        await asyncio.sleep(CAPTURE_INTERVAL_SECONDS)
-
+            await scanner.start()
+            await asyncio.wait_for(device_found_event.wait(), timeout=120.0)
+            await scanner.stop()
         except asyncio.TimeoutError:
-            print("Timeout during capture cycle. Retrying...")
-            server_state["status"] = "Timeout. Retrying..."
+            print(f"No device found after 120 seconds. Restarting scan...")
+            await scanner.stop()
+            await asyncio.sleep(2)
+            continue
         except Exception as e:
-            print(f"An error occurred in ble_communication_task: {e}")
-            server_state["status"] = "Connection Lost. Retrying..."
-        finally:
-            print(
-                f"Disconnected. Retrying in {RECONNECT_DELAY_SECONDS} seconds...")
-            await asyncio.sleep(RECONNECT_DELAY_SECONDS)
+            print(f"Error during scan: {e}")
+            await scanner.stop()
+            await asyncio.sleep(5)
+            continue
 
-# --- Flask Web Server Setup ---
+        if found_device:
+            server_state["status"] = f"Connecting to {found_device.address}..."
+            print(server_state["status"])
+            try:
+                async with BleakClient(found_device, timeout=20.0) as client:
+                    if client.is_connected:
+                        server_state["status"] = "Connected. Setting up notifications..."
+                        print(server_state["status"])
+
+                        while not data_queue.empty():
+                            data_queue.get_nowait()
+
+                        status_handler_with_client = functools.partial(
+                            status_notification_handler, client=client)
+
+                        await client.start_notify(CHARACTERISTIC_UUID_STATUS, status_handler_with_client)
+                        print("STATUS notifications enabled")
+                        await client.start_notify(CHARACTERISTIC_UUID_DATA, data_notification_handler)
+                        print("DATA notifications enabled")
+
+                        server_state["status"] = "Ready. Waiting for device to send data..."
+                        print(server_state["status"])
+
+                        while client.is_connected:
+                            await asyncio.sleep(1)
+                        print("Client disconnected")
+
+            except Exception as e:
+                server_state["status"] = f"Connection Error: {e}"
+                print(f"An unexpected error occurred: {e}")
+            finally:
+                server_state["status"] = "Disconnected. Resuming scan."
+                print(server_state["status"])
+                device_found_event.clear()
+                found_device = None
+                await asyncio.sleep(2)
+        else:
+            device_found_event.clear()
+            await asyncio.sleep(2)
 
 
+# --- Flask Web Server ---
 @app.route('/')
 def index():
-    """Serves the main HTML page."""
-    return render_template('index.html', status=server_state.get("status"))
+    return render_template('index.html')
 
 
-@app.route(f'/{LATEST_IMAGE_FILENAME}')
-def latest_image():
-    """Serves the latest captured image."""
-    return send_from_directory(STATIC_FOLDER, LATEST_IMAGE_FILENAME, as_attachment=False, mimetype='image/jpeg')
+@app.route('/api/status')
+def api_status():
+    return jsonify(server_state)
+
+
+@app.route('/api/captures')
+def api_captures():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    captures = cursor.execute(
+        "SELECT * FROM captures ORDER BY timestamp DESC").fetchall()
+    conn.close()
+    return jsonify([dict(row) for row in captures])
+
+
+@app.route('/imgs/<path:filename>')
+def serve_image(filename):
+    return send_from_directory(IMGS_PATH, filename)
 
 
 def run_flask_app():
-    """Runs the Flask app in a separate thread."""
     print(f"Starting Flask web server on http://0.0.0.0:{FLASK_PORT}")
     app.run(host='0.0.0.0', port=FLASK_PORT, debug=False)
 
 
 if __name__ == '__main__':
-    # Start the Flask server in a background thread
+    setup_database()
     flask_thread = threading.Thread(target=run_flask_app, daemon=True)
     flask_thread.start()
+    time.sleep(1)
 
-    # Start the main BLE communication loop
-    print("Starting BLE communication task...")
     try:
+        print("Starting BLE communication task...")
         asyncio.run(ble_communication_task())
     except KeyboardInterrupt:
-        print("Program stopped by user.")
+        print("\nProgram stopped by user.")
+    except Exception as e:
+        print(f"Fatal error in BLE task: {e}")
+        import traceback
+        traceback.print_exc()

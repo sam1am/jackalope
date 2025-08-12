@@ -1,18 +1,8 @@
 [
-    "/Users/johngarfield/Documents/PlatformIO/Projects/SamTest/docs/pinout.md",
-    "/Users/johngarfield/Documents/PlatformIO/Projects/SamTest/include/audio_handler.h",
-    "/Users/johngarfield/Documents/PlatformIO/Projects/SamTest/include/bluetooth_handler.h",
-    "/Users/johngarfield/Documents/PlatformIO/Projects/SamTest/include/camera_handler.h",
-    "/Users/johngarfield/Documents/PlatformIO/Projects/SamTest/include/display_handler.h",
-    "/Users/johngarfield/Documents/PlatformIO/Projects/SamTest/include/globals.h",
-    "/Users/johngarfield/Documents/PlatformIO/Projects/SamTest/include/hardware_handler.h",
-    "/Users/johngarfield/Documents/PlatformIO/Projects/SamTest/platformio.ini",
-    "/Users/johngarfield/Documents/PlatformIO/Projects/SamTest/src/audio_handler.cpp",
-    "/Users/johngarfield/Documents/PlatformIO/Projects/SamTest/src/bluetooth_handler.cpp",
-    "/Users/johngarfield/Documents/PlatformIO/Projects/SamTest/src/camera_handler.cpp",
-    "/Users/johngarfield/Documents/PlatformIO/Projects/SamTest/src/display_handler.cpp",
-    "/Users/johngarfield/Documents/PlatformIO/Projects/SamTest/src/hardware_handler.cpp",
-    "/Users/johngarfield/Documents/PlatformIO/Projects/SamTest/src/main.cpp",
-    "/Users/johngarfield/Documents/PlatformIO/Projects/SamTest/srv/main.py",
-    "/Users/johngarfield/Documents/PlatformIO/Projects/SamTest/srv/reqs.txt"
+    "/Users/johngarfield/Documents/GitHub/jackalope/include/globals.h",
+    "/Users/johngarfield/Documents/GitHub/jackalope/platformio.ini",
+    "/Users/johngarfield/Documents/GitHub/jackalope/src/bluetooth_handler.cpp",
+    "/Users/johngarfield/Documents/GitHub/jackalope/src/main.cpp",
+    "/Users/johngarfield/Documents/GitHub/jackalope/srv/main.py",
+    "/Users/johngarfield/Documents/GitHub/jackalope/srv/templates/index.html"
 ]
