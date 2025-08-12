@@ -52,7 +52,8 @@
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
             gap: 20px;
-            align-items: end;
+            align-items: center;
+            /* Vertically align items */
         }
 
         .form-group label {
@@ -78,10 +79,39 @@
             border-radius: 4px;
             cursor: pointer;
             font-size: 1em;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 38px;
+            /* Match input height */
         }
 
         .form-group button:hover {
             background-color: #0056b3;
+        }
+
+        .form-group button:disabled {
+            background-color: #5a9ed8;
+            cursor: not-allowed;
+        }
+
+        .btn-loader {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #fff;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
         }
 
         #gallery {
@@ -125,17 +155,22 @@
 
         <div class="settings-form">
             <h2>Device Settings</h2>
+            <!-- FIX: Added a dedicated error message container -->
+            <div id="settings-error" style="color: red; margin-bottom: 10px; display: none;"></div>
             <div class="form-grid">
                 <div class="form-group">
                     <label for="capture-frequency">Capture Frequency (seconds)</label>
-                    <input type="number" id="capture-frequency" min="5">
+                    <input type="number" id="capture-frequency" min="3">
                 </div>
                 <div class="form-group">
                     <label for="storage-threshold">Send Threshold (%)</label>
-                    <input type="number" id="storage-threshold" min="10" max="95">
+                    <input type="number" id="storage-threshold" min="2" max="95">
                 </div>
                 <div class="form-group">
-                    <button id="save-settings-btn">Save & Send to Device</button>
+                    <button id="save-settings-btn">
+                        <span class="btn-text">Save & Send to Device</span>
+                        <div class="btn-loader" style="display: none;"></div>
+                    </button>
                 </div>
             </div>
         </div>
@@ -153,6 +188,21 @@
         const freqInput = document.getElementById('capture-frequency');
         const threshInput = document.getElementById('storage-threshold');
         const saveBtn = document.getElementById('save-settings-btn');
+        const saveBtnText = saveBtn.querySelector('.btn-text');
+        const saveBtnLoader = saveBtn.querySelector('.btn-loader');
+        const settingsError = document.getElementById('settings-error'); // Reference to the error container
+
+        function setButtonState(isLoading) {
+            if (isLoading) {
+                saveBtn.disabled = true;
+                saveBtnText.style.display = 'none';
+                saveBtnLoader.style.display = 'block';
+            } else {
+                saveBtn.disabled = false;
+                saveBtnText.style.display = 'block';
+                saveBtnLoader.style.display = 'none';
+            }
+        }
 
         async function fetchStatus() {
             try {
@@ -160,6 +210,9 @@
                 const data = await response.json();
                 statusText.textContent = data.status || 'N/A';
                 storageUsageText.textContent = data.storage_usage || '0';
+
+                setButtonState(data.settings_pending);
+
             } catch (error) {
                 console.error('Error fetching status:', error);
                 statusText.textContent = 'Error loading status.';
@@ -178,22 +231,49 @@
         }
 
         async function saveSettings() {
+            setButtonState(true);
+            settingsError.style.display = 'none'; // Hide previous errors
+
+            // FIX: Parse values and check if they are valid numbers
+            const freqValue = parseInt(freqInput.value, 10);
+            const threshValue = parseInt(threshInput.value, 10);
+
+            if (isNaN(freqValue) || isNaN(threshValue)) {
+                statusText.textContent = "Error saving settings.";
+                settingsError.textContent = "Frequency and Threshold must be valid numbers.";
+                settingsError.style.display = 'block';
+                setButtonState(false); // Re-enable the button
+                return; // Stop the function
+            }
+
             const settings = {
-                frequency: parseInt(freqInput.value, 10),
-                threshold: parseInt(threshInput.value, 10)
+                frequency: freqValue,
+                threshold: threshValue
             };
+
             statusText.textContent = "Queueing settings for device...";
+
             try {
                 const response = await fetch('/api/settings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(settings)
                 });
+
                 const result = await response.json();
-                statusText.textContent = result.message || "Settings sent!";
+
+                if (!response.ok) {
+                    throw new Error(result.error || 'Failed to save settings');
+                }
+
+                statusText.textContent = result.message || "Settings queued!";
+
             } catch (error) {
                 console.error('Error saving settings:', error);
                 statusText.textContent = "Error saving settings.";
+                settingsError.textContent = error.message;
+                settingsError.style.display = 'block';
+                setButtonState(false);
             }
         }
 
@@ -229,16 +309,16 @@
         saveBtn.addEventListener('click', saveSettings);
 
         setInterval(() => {
-                fetchStatus();
-                fetchCaptures();
-            }, 3000);
+            fetchStatus();
+            fetchCaptures();
+        }, 3000);
 
-            document.addEventListener('DOMContentLoaded', () => {
-                fetchStatus();
-                fetchCaptures();
-                fetchSettings();
-            });
-        </script>
-    </body>
-    
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchStatus();
+            fetchCaptures();
+            fetchSettings();
+        });
+    </script>
+</body>
+
 </html>

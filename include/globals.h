@@ -42,8 +42,8 @@
 #define I2C_SDA 21
 #define I2C_SCL 22
 
-    // --- CONFIGURATION SETTINGS (Loaded from NVS) ---
-    extern int deep_sleep_seconds;
+// --- CONFIGURATION SETTINGS (Loaded from NVS) ---
+extern int deep_sleep_seconds;
 extern float storage_threshold_percent;
 
 // --- GLOBAL OBJECTS ---
@@ -55,7 +55,8 @@ extern BLECharacteristic *pStatusCharacteristic;
 extern volatile bool client_connected;
 extern volatile bool next_chunk_requested;
 extern volatile bool transfer_acknowledged;
-extern volatile bool new_config_received; // FIX: Flag for main loop to process settings
+extern volatile bool new_config_received;
+extern volatile bool server_ready_for_data; // FIX: Flag for handshake
 extern int image_count;
 extern char pending_config_str[64]; // FIX: Buffer to hold incoming settings
 

@@ -4,11 +4,9 @@
 #include <cstring> // Required for strcpy and strtok
 
 // --- Image Buffers ---
-// These are standard global variables, NOT in RTC memory.
-// They are owned by this file and persist as long as the device is powered on.
 uint8_t *framebuffers[IMAGE_BATCH_SIZE];
 size_t fb_lengths[IMAGE_BATCH_SIZE];
-int image_count = 0; // Tracks images in the current batch
+int image_count = 0;
 
 // BLE Characteristics
 BLECharacteristic *pStatusCharacteristic = NULL;
@@ -17,18 +15,15 @@ BLECharacteristic *pCommandCharacteristic = NULL;
 BLECharacteristic *pConfigCharacteristic = NULL;
 
 // --- Callback for handling settings changes from the server ---
-// FIX: This callback is now fast and non-blocking. It only copies the data
-// and sets a flag for the main loop to handle the actual processing.
 class ConfigCallbacks : public BLECharacteristicCallbacks
 {
     void onWrite(BLECharacteristic *pCharacteristic)
     {
         std::string value = pCharacteristic->getValue();
-        // Check length to avoid buffer overflow
         if (value.length() > 0 && value.length() < sizeof(pending_config_str))
         {
             strcpy(pending_config_str, value.c_str());
-            new_config_received = true; // Signal the main loop
+            new_config_received = true;
             Serial.printf("Queued new settings for processing: %s\n", value.c_str());
         }
     }
@@ -55,6 +50,11 @@ class CommandCallbacks : public BLECharacteristicCallbacks
             {
                 transfer_acknowledged = true;
                 Serial.println("ACK received from server");
+            }
+            else if (cmd == 'R') // FIX: Handle the 'Ready' signal from the server
+            {
+                server_ready_for_data = true;
+                Serial.println("Received 'Ready' signal from server.");
             }
         }
     }
@@ -119,11 +119,10 @@ void start_bluetooth()
     update_display(3, "BLE Init OK");
 }
 
-// FIX: New function to de-initialize Bluetooth for power saving
 void stop_bluetooth()
 {
     Serial.println("Stopping BLE server...");
-    BLEDevice::deinit(false); // deinit without releasing memory
+    BLEDevice::deinit(false);
     Serial.println("BLE Stopped.");
 }
 
@@ -219,7 +218,6 @@ void send_batched_data()
 {
     if (!client_connected)
         return;
-    delay(500);
 
     char count_buf[32];
     sprintf(count_buf, "COUNT:%d", image_count);
@@ -254,8 +252,4 @@ void send_batched_data()
         }
         delay(500);
     }
-
-    Serial.println("\n=== Batch Transfer Complete ===");
-    // FIX: Removed the call to clear_image_buffers() from here.
-    // The main loop is now responsible for memory management.
 }

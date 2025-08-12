@@ -16,6 +16,7 @@ volatile bool client_connected = false;
 volatile bool next_chunk_requested = false;
 volatile bool transfer_acknowledged = false;
 volatile bool new_config_received = false;
+volatile bool server_ready_for_data = false; // FIX: Definition for handshake flag
 char pending_config_str[64];
 
 // Forward declaration from bluetooth_handler.cpp, where these are defined
@@ -23,7 +24,7 @@ extern uint8_t *framebuffers[IMAGE_BATCH_SIZE];
 extern size_t fb_lengths[IMAGE_BATCH_SIZE];
 extern int image_count;
 
-// FIX: Stable sleep function with added serial synchronization.
+// Stable sleep function with added serial synchronization.
 void enter_light_sleep(int sleep_time_seconds)
 {
   Serial.printf("Entering light sleep for %d seconds.\n", sleep_time_seconds);
@@ -36,7 +37,7 @@ void enter_light_sleep(int sleep_time_seconds)
   // 2. Configure wakeup source
   esp_sleep_enable_timer_wakeup(sleep_time_seconds * 1000000ULL);
 
-  // FIX: Wait for the serial buffer to empty before sleeping to prevent cutoff messages.
+  // Wait for the serial buffer to empty before sleeping to prevent cutoff messages.
   Serial.flush();
 
   // 3. Enter light sleep
@@ -44,7 +45,7 @@ void enter_light_sleep(int sleep_time_seconds)
 
   // --- WAKE UP ---
 
-  // FIX: Short delay to allow serial port hardware to stabilize after waking up.
+  // Short delay to allow serial port hardware to stabilize after waking up.
   delay(100);
 
   Serial.println("\nWoke up from light sleep."); // Added newline for cleaner logs
@@ -52,7 +53,6 @@ void enter_light_sleep(int sleep_time_seconds)
   // 4. Re-initialize peripherals
   display.displayOn();
   init_display();
-  // start_bluetooth();
   update_display(0, "System Ready", true);
 }
 
@@ -112,9 +112,15 @@ void load_settings()
 
 void apply_new_settings()
 {
+  if (!new_config_received)
+    return;
+
   Serial.printf("Applying new settings: '%s'\n", pending_config_str);
 
-  char *f_part = strstr(pending_config_str, "F:");
+  char temp_str[64];
+  strcpy(temp_str, pending_config_str);
+
+  char *f_part = strstr(temp_str, "F:");
   if (f_part)
   {
     int new_freq = atoi(f_part + 2);
@@ -125,11 +131,11 @@ void apply_new_settings()
     }
   }
 
-  char *t_part = strstr(pending_config_str, "T:");
+  char *t_part = strstr(temp_str, "T:");
   if (t_part)
   {
     float new_thresh = atof(t_part + 2);
-    if (new_thresh >= 10 && new_thresh <= 95)
+    if (new_thresh >= 2 && new_thresh <= 95)
     {
       storage_threshold_percent = new_thresh;
       Serial.printf("Parsed Threshold: %.1f\n", new_thresh);
@@ -142,7 +148,7 @@ void apply_new_settings()
   preferences.end();
 
   Serial.printf("Settings saved and applied: Interval=%ds, Threshold=%.1f%%\n", deep_sleep_seconds, storage_threshold_percent);
-  update_display(4, "Settings Saved!", true);
+  update_display(4, "New Settings OK!", true);
   delay(1500);
   update_display(4, "", true);
 
@@ -156,7 +162,6 @@ void setup()
   Serial.println("\n--- T-Camera Continuous Timelapse (Low Power) ---");
 
   setCpuFrequencyMhz(80);
-  // FIX: Re-initialize Serial after changing CPU frequency to match the new clock speed.
   Serial.end();
   Serial.begin(115200);
   Serial.printf("CPU Freq set to %d MHz\n", getCpuFrequencyMhz());
@@ -164,21 +169,14 @@ void setup()
   init_display();
   load_settings();
   init_camera();
-  start_bluetooth(); // Start BLE on initial boot.
 
   update_display(0, "System Ready", true);
-  Serial.println("System initialized and running. Waiting for first capture interval.");
+  Serial.println("System initialized. Waiting for first capture interval.");
 }
 
 // --- LOOP: Main program cycle ---
 void loop()
 {
-  // Check for settings first, as BLE is guaranteed to be on.
-  if (new_config_received)
-  {
-    apply_new_settings();
-  }
-
   enter_light_sleep(deep_sleep_seconds);
 
   setCpuFrequencyMhz(240);
@@ -206,14 +204,9 @@ void loop()
   Serial.println(status_buf);
   update_display(1, status_buf, true);
 
-  if (client_connected && pStatusCharacteristic != NULL)
-  {
-    pStatusCharacteristic->setValue(status_buf);
-    pStatusCharacteristic->notify();
-  }
-
   bool should_transfer = (image_count > 0 && (used_percentage >= storage_threshold_percent || image_count >= IMAGE_BATCH_SIZE));
 
+  // FIX: Reworked transfer logic with explicit handshake
   if (should_transfer)
   {
     start_bluetooth();
@@ -224,17 +217,11 @@ void loop()
     Serial.printf("CPU Freq boosted to %d MHz for transfer\n", getCpuFrequencyMhz());
 
     Serial.printf("Transfer condition met (Usage: %.1f%%, Count: %d).\n", used_percentage, image_count);
-    bool transfer_attempted = false;
+    bool transfer_successful = false;
+    server_ready_for_data = false; // Reset handshake flag for this session
 
-    if (client_connected)
-    {
-      Serial.println("Client is already connected. Starting transfer.");
-      update_display(2, "Connected! Sending...", true);
-      delay(500);
-      send_batched_data();
-      transfer_attempted = true;
-    }
-    else
+    // Step 1: Wait for a client to connect (if not already connected)
+    if (!client_connected)
     {
       Serial.println("Waiting for a client to connect for transfer...");
       update_display(2, "Batch full. Wait conn.", true);
@@ -243,32 +230,73 @@ void loop()
       {
         delay(100);
       }
-      if (client_connected)
+    }
+
+    // Step 2: Once connected, wait for the server to signal it's ready
+    if (client_connected)
+    {
+      Serial.println("Client connected. Waiting for server to signal ready...");
+      update_display(2, "Connected. Wait ready.", true);
+      uint32_t wait_start_time = millis();
+      while (!server_ready_for_data && client_connected && (millis() - wait_start_time < 10000)) // 10s timeout
       {
-        Serial.println("Client connected for transfer.");
-        update_display(2, "Connected! Sending...", true);
-        delay(500);
+        delay(50);
+      }
+
+      // Step 3: If server is ready, start the transfer
+      if (server_ready_for_data)
+      {
+        Serial.println("Server is ready. Starting data transfer.");
+        update_display(2, "Ready! Sending...", true);
         send_batched_data();
+        transfer_successful = true; // Assume success, send_batched_data handles internal errors
       }
       else
       {
-        Serial.println("No client connected within timeout. Discarding data to continue.");
-        update_display(2, "No connection. Clearing.", true);
+        Serial.println("Timeout: Server did not signal ready. Aborting transfer.");
+        update_display(2, "Server not ready.", true);
+        delay(2000);
       }
-      transfer_attempted = true;
     }
-
-    if (transfer_attempted)
+    else
     {
-      Serial.println("Waiting for BLE TX buffer to clear...");
-      delay(500);
-      clear_image_buffers();
+      Serial.println("No client connected within timeout. Discarding data to continue.");
+      update_display(2, "No connection. Clearing.", true);
+      delay(2000);
     }
 
+    // Step 4: Finalize the transfer session
+    if (transfer_successful)
+    {
+      Serial.println("\n=== Batch Transfer Complete ===");
+      update_display(2, "Sent. Wait disconnect", true);
+
+      Serial.println("Waiting for client to disconnect to finalize and apply settings...");
+      uint32_t finalization_start = millis();
+
+      while (client_connected && (millis() - finalization_start < 10000))
+      {
+        if (new_config_received)
+        {
+          apply_new_settings();
+        }
+        delay(100);
+      }
+
+      if (client_connected)
+      {
+        Serial.println("WARN: Timeout waiting for client disconnect. Forcing cleanup.");
+      }
+      else
+      {
+        Serial.println("Client disconnected cleanly.");
+      }
+    }
+
+    clear_image_buffers();
     update_display(2, "", true);
 
     setCpuFrequencyMhz(80);
-    // FIX: Re-initialize Serial port after transfer is complete.
     Serial.end();
     Serial.begin(115200);
     Serial.printf("CPU Freq returned to %d MHz\n", getCpuFrequencyMhz());

@@ -26,6 +26,7 @@ CHARACTERISTIC_UUID_CONFIG = "a31a6820-8437-4f55-8898-5226c04a29a3"
 # --- PROTOCOL COMMANDS ---
 CMD_NEXT_CHUNK = b'N'
 CMD_ACKNOWLEDGE = b'A'
+CMD_READY = b'R'  # FIX: New command to signal server readiness
 
 # --- WEB SERVER & GLOBAL STATE ---
 app = Flask(__name__, static_folder=IMGS_FOLDER_NAME)
@@ -114,12 +115,8 @@ def data_notification_handler(sender, data):
 
 
 async def handle_image_transfer(client, img_size):
-    """
-    Handles the image transfer in a separate, robust task to avoid blocking the main event handler.
-    """
     try:
         server_state["status"] = f"Receiving image ({img_size} bytes)..."
-        # Acknowledge the image transfer start
         await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_ACKNOWLEDGE, response=False)
         img_buffer = bytearray()
         if await transfer_file_data(client, img_size, img_buffer, "Image"):
@@ -139,36 +136,35 @@ async def handle_image_transfer(client, img_size):
         server_state["status"] = "Image transfer failed due to connection error."
 
 
-async def status_notification_handler(sender, data, client):
-    """
-    Handles incoming status notifications from the device.
-    For long operations like image transfers, it spawns a new task.
-    """
-    try:
-        status_str = data.decode('utf-8').strip()
-        print(f"\n[STATUS] Received: {status_str}")
+def status_notification_handler(sender, data, client, loop):
+    async def process_status_update():
+        try:
+            status_str = data.decode('utf-8').strip()
+            print(f"\n[STATUS] Received: {status_str}")
 
-        if status_str.startswith("PSRAM:"):
-            try:
-                usage_val = float(status_str.split(':')[1].split('%')[0])
-                server_state["storage_usage"] = round(usage_val, 1)
-            except (ValueError, IndexError):
-                pass
-            server_state["status"] = "Device ready to transfer."
+            if status_str.startswith("PSRAM:"):
+                try:
+                    usage_val = float(status_str.split(':')[1].split('%')[0])
+                    server_state["storage_usage"] = round(usage_val, 1)
+                except (ValueError, IndexError):
+                    pass
+                if not pending_config_command:
+                    server_state["status"] = "Device ready to transfer."
 
-        elif status_str.startswith("COUNT:"):
-            image_count = int(status_str.split(':')[1])
-            server_state["status"] = f"Batch of {image_count} images incoming. Acknowledging."
-            print(server_state["status"])
-            await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_ACKNOWLEDGE, response=False)
+            elif status_str.startswith("COUNT:"):
+                image_count = int(status_str.split(':')[1])
+                server_state["status"] = f"Batch of {image_count} images incoming. Acknowledging."
+                print(server_state["status"])
+                await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_ACKNOWLEDGE, response=False)
 
-        elif status_str.startswith("IMAGE:"):
-            img_size = int(status_str.split(':')[1])
-            # FIX: Spawn the transfer as a background task so it doesn't block this handler
-            asyncio.create_task(handle_image_transfer(client, img_size))
+            elif status_str.startswith("IMAGE:"):
+                img_size = int(status_str.split(':')[1])
+                asyncio.create_task(handle_image_transfer(client, img_size))
 
-    except Exception as e:
-        print(f"Error in status_notification_handler: {e}")
+        except Exception as e:
+            print(f"Error in process_status_update: {e}")
+
+    asyncio.run_coroutine_threadsafe(process_status_update(), loop)
 
 
 def detection_callback(device, advertising_data):
@@ -184,9 +180,11 @@ async def ble_communication_task():
     global found_device, data_queue, device_found_event, pending_config_command
     data_queue = asyncio.Queue()
     device_found_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
 
     while True:
-        server_state["status"] = "Scanning for camera device..."
+        if not pending_config_command:
+            server_state["status"] = "Scanning for camera device..."
         print(f"\n{server_state['status']}")
         scanner = BleakScanner(detection_callback=detection_callback)
         try:
@@ -202,7 +200,8 @@ async def ble_communication_task():
             continue
 
         if found_device:
-            server_state["status"] = f"Connecting to {found_device.address}..."
+            if not pending_config_command:
+                server_state["status"] = f"Connecting to {found_device.address}..."
             try:
                 async with BleakClient(found_device, timeout=20.0) as client:
                     if client.is_connected:
@@ -211,11 +210,19 @@ async def ble_communication_task():
                             data_queue.get_nowait()
 
                         status_handler_with_client = functools.partial(
-                            status_notification_handler, client=client)
+                            status_notification_handler, client=client, loop=loop)
+
                         await client.start_notify(CHARACTERISTIC_UUID_STATUS, status_handler_with_client)
                         await client.start_notify(CHARACTERISTIC_UUID_DATA, data_notification_handler)
 
-                        server_state["status"] = "Ready. Waiting for device data..."
+                        # FIX: Signal the device that the server is ready to receive data
+                        print(
+                            "Subscribed to notifications. Signaling device that we are ready.")
+                        await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_READY, response=False)
+
+                        if not pending_config_command:
+                            server_state["status"] = "Ready. Waiting for device data..."
+
                         while client.is_connected:
                             if pending_config_command:
                                 print(
@@ -227,7 +234,7 @@ async def ble_communication_task():
                                             pending_config_command, 'utf-8'),
                                         response=False
                                     )
-                                    pending_config_command = None  # Clear after sending
+                                    pending_config_command = None
                                     server_state["status"] = "Settings sent to device."
                                 except Exception as e:
                                     print(f"Failed to send config: {e}")
@@ -236,7 +243,8 @@ async def ble_communication_task():
             except Exception as e:
                 server_state["status"] = f"Connection Error: {e}"
             finally:
-                server_state["status"] = "Disconnected. Resuming scan."
+                if not pending_config_command:
+                    server_state["status"] = "Disconnected. Resuming scan."
                 device_found_event.clear()
                 found_device = None
                 await asyncio.sleep(2)
@@ -249,7 +257,12 @@ def index(): return render_template('index.html')
 
 @app.route('/api/status')
 def api_status():
-    return jsonify({"status": server_state.get("status"), "storage_usage": server_state.get("storage_usage")})
+    global pending_config_command
+    return jsonify({
+        "status": server_state.get("status"),
+        "storage_usage": server_state.get("storage_usage"),
+        "settings_pending": pending_config_command is not None
+    })
 
 
 @app.route('/api/captures')
@@ -277,17 +290,19 @@ def set_settings():
     if not data:
         return jsonify({"error": "Invalid data"}), 400
 
+    if pending_config_command:
+        return jsonify({"error": "A previous settings change is still pending. Please wait."}), 429
+
     try:
         freq = int(data['frequency'])
         thresh = int(data['threshold'])
     except (ValueError, TypeError, KeyError):
         return jsonify({"error": "Invalid or missing frequency/threshold"}), 400
 
-    # FIX: Added server-side validation for the inputs
-    if not (freq >= 5):
-        return jsonify({"error": "Frequency must be 5 seconds or greater."}), 400
-    if not (10 <= thresh <= 95):
-        return jsonify({"error": "Threshold must be between 10% and 95%."}), 400
+    if not (freq >= 3):
+        return jsonify({"error": "Frequency must be 3 seconds or greater."}), 400
+    if not (2 <= thresh <= 95):
+        return jsonify({"error": "Threshold must be between 2% and 95%."}), 400
 
     server_state["settings"]["frequency"] = freq
     server_state["settings"]["threshold"] = thresh
