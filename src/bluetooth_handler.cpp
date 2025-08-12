@@ -119,6 +119,14 @@ void start_bluetooth()
     update_display(3, "BLE Init OK");
 }
 
+// FIX: New function to de-initialize Bluetooth for power saving
+void stop_bluetooth()
+{
+    Serial.println("Stopping BLE server...");
+    BLEDevice::deinit(false); // deinit without releasing memory
+    Serial.println("BLE Stopped.");
+}
+
 void notify_chunk(const uint8_t *data, size_t size)
 {
     pDataCharacteristic->setValue((uint8_t *)data, size);

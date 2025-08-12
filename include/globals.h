@@ -6,6 +6,7 @@
 #include "esp_camera.h"
 #include <BLEDevice.h>
 #include <Preferences.h>
+#include "esp_sleep.h" // Added for light sleep
 
 // --- PROTOCOL & BATCH CONFIGURATION ---
 #define CHUNK_SIZE 512
@@ -41,8 +42,8 @@
 #define I2C_SDA 21
 #define I2C_SCL 22
 
-// --- CONFIGURATION SETTINGS (Loaded from NVS) ---
-extern int deep_sleep_seconds;
+    // --- CONFIGURATION SETTINGS (Loaded from NVS) ---
+    extern int deep_sleep_seconds;
 extern float storage_threshold_percent;
 
 // --- GLOBAL OBJECTS ---
@@ -64,6 +65,7 @@ void update_display(int line, const char *text, bool do_display);
 void init_camera();
 void deinit_camera();
 void start_bluetooth();
+void stop_bluetooth(); // New function for BLE shutdown
 void send_batched_data();
 bool store_image_in_psram();
 void load_settings();

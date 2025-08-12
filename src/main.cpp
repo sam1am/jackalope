@@ -8,7 +8,7 @@ SSD1306 display(0x3c, I2C_SDA, I2C_SCL, GEOMETRY_128_64);
 Preferences preferences;
 
 // Configuration settings with defaults
-int deep_sleep_seconds = 5;
+int deep_sleep_seconds = 10;
 float storage_threshold_percent = 5.0;
 
 // Global state flags
@@ -22,6 +22,31 @@ char pending_config_str[64];
 extern uint8_t *framebuffers[IMAGE_BATCH_SIZE];
 extern size_t fb_lengths[IMAGE_BATCH_SIZE];
 extern int image_count;
+
+// FIX: Modified sleep function to avoid camera re-initialization crashes.
+void enter_light_sleep(int sleep_time_seconds)
+{
+  Serial.printf("Entering light sleep for %d seconds.\n", sleep_time_seconds);
+
+  // 1. Power down peripherals that are safe to restart
+  stop_bluetooth();
+  display.displayOff(); // Turning off display also powers down camera on this board
+
+  // 2. Configure wakeup source
+  esp_sleep_enable_timer_wakeup(sleep_time_seconds * 1000000ULL);
+
+  // 3. Enter light sleep
+  esp_light_sleep_start();
+
+  // --- WAKE UP ---
+  Serial.println("Woke up from light sleep.");
+
+  // 4. Re-initialize powered-down peripherals
+  display.displayOn();
+  init_display();
+  start_bluetooth();
+  update_display(0, "System Ready", true);
+}
 
 void clear_image_buffers()
 {
@@ -77,18 +102,14 @@ void load_settings()
                 deep_sleep_seconds, storage_threshold_percent);
 }
 
-// FIX: Replaced the buggy strtok parser with a simple, robust manual parser.
-// This new function iterates through the string and extracts values directly,
-// avoiding the infinite loop issue.
 void apply_new_settings()
 {
   Serial.printf("Applying new settings: '%s'\n", pending_config_str);
 
-  // Find the 'F:' part for Frequency
   char *f_part = strstr(pending_config_str, "F:");
   if (f_part)
   {
-    int new_freq = atoi(f_part + 2); // Get integer after "F:"
+    int new_freq = atoi(f_part + 2);
     if (new_freq > 0)
     {
       deep_sleep_seconds = new_freq;
@@ -96,11 +117,10 @@ void apply_new_settings()
     }
   }
 
-  // Find the 'T:' part for Threshold
   char *t_part = strstr(pending_config_str, "T:");
   if (t_part)
   {
-    float new_thresh = atof(t_part + 2); // Get float after "T:"
+    float new_thresh = atof(t_part + 2);
     if (new_thresh >= 10 && new_thresh <= 95)
     {
       storage_threshold_percent = new_thresh;
@@ -108,7 +128,6 @@ void apply_new_settings()
     }
   }
 
-  // Save the (now correctly parsed) values to non-volatile storage
   preferences.begin("settings", false);
   preferences.putInt("sleep_sec", deep_sleep_seconds);
   preferences.putFloat("storage_pct", storage_threshold_percent);
@@ -119,14 +138,17 @@ void apply_new_settings()
   delay(1500);
   update_display(4, "", true);
 
-  new_config_received = false; // Reset the flag
+  new_config_received = false;
 }
 
 // --- SETUP: Runs once at power-on ---
 void setup()
 {
   Serial.begin(115200);
-  Serial.println("\n--- T-Camera Continuous Timelapse Mode ---");
+  Serial.println("\n--- T-Camera Continuous Timelapse (Low Power) ---");
+
+  setCpuFrequencyMhz(80);
+  Serial.printf("CPU Freq set to %d MHz\n", getCpuFrequencyMhz());
 
   init_display();
   load_settings();
@@ -145,14 +167,20 @@ void loop()
     apply_new_settings();
   }
 
-  Serial.printf("Waiting for %d seconds...\n", deep_sleep_seconds);
-  delay(deep_sleep_seconds * 1000);
+  enter_light_sleep(deep_sleep_seconds);
+
+  setCpuFrequencyMhz(240);
+  Serial.printf("CPU Freq set to %d MHz for capture\n", getCpuFrequencyMhz());
 
   Serial.println("Capture interval elapsed. Taking picture...");
   if (!store_image_in_psram())
   {
     Serial.println("Failed to store image. Check PSRAM or batch size limit.");
   }
+
+  // Revert to lower frequency for idle monitoring
+  setCpuFrequencyMhz(80);
+  Serial.printf("CPU Freq returned to %d MHz\n", getCpuFrequencyMhz());
 
   size_t total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
   size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -173,14 +201,17 @@ void loop()
 
   if (should_transfer)
   {
-    Serial.printf("Transfer condition met (Usage: %.1f%%, Count: %d).\n", used_percentage, image_count);
+    setCpuFrequencyMhz(240);
+    Serial.printf("CPU Freq boosted to %d MHz for transfer\n", getCpuFrequencyMhz());
 
+    Serial.printf("Transfer condition met (Usage: %.1f%%, Count: %d).\n", used_percentage, image_count);
     bool transfer_attempted = false;
 
     if (client_connected)
     {
       Serial.println("Client is already connected. Starting transfer.");
       update_display(2, "Connected! Sending...", true);
+      delay(500); // FIX: Wait for server to be ready before sending data
       send_batched_data();
       transfer_attempted = true;
     }
@@ -188,17 +219,16 @@ void loop()
     {
       Serial.println("Waiting for a client to connect for transfer...");
       update_display(2, "Batch full. Wait conn.", true);
-
       uint32_t start_time = millis();
       while (!client_connected && (millis() - start_time < 30000))
       {
         delay(100);
       }
-
       if (client_connected)
       {
         Serial.println("Client connected for transfer.");
         update_display(2, "Connected! Sending...", true);
+        delay(500); // FIX: Wait for server to be ready before sending data
         send_batched_data();
       }
       else
@@ -215,5 +245,8 @@ void loop()
     }
 
     update_display(2, "", true);
+
+    setCpuFrequencyMhz(80);
+    Serial.printf("CPU Freq returned to %d MHz\n", getCpuFrequencyMhz());
   }
 }
