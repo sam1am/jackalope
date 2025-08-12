@@ -211,7 +211,7 @@ void loop()
     {
       Serial.println("Client is already connected. Starting transfer.");
       update_display(2, "Connected! Sending...", true);
-      delay(500); // FIX: Wait for server to be ready before sending data
+      delay(500); // Wait for server to be ready before sending data
       send_batched_data();
       transfer_attempted = true;
     }
@@ -228,7 +228,7 @@ void loop()
       {
         Serial.println("Client connected for transfer.");
         update_display(2, "Connected! Sending...", true);
-        delay(500); // FIX: Wait for server to be ready before sending data
+        delay(500); // Wait for server to be ready before sending data
         send_batched_data();
       }
       else
@@ -241,6 +241,11 @@ void loop()
 
     if (transfer_attempted)
     {
+      // FIX: Add a delay to allow the BLE stack to transmit the final chunks
+      // before we free the memory buffers they point to. This prevents a race
+      // condition where the buffer is freed before the BLE task can send it.
+      Serial.println("Waiting for BLE TX buffer to clear...");
+      delay(500);
       clear_image_buffers();
     }
 
