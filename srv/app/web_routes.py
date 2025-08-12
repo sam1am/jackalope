@@ -1,9 +1,13 @@
 import sqlite3
-from flask import Flask, render_template, send_from_directory, jsonify, request
+import os
+from flask import Flask, render_template, jsonify, request
+# NOTE: send_from_directory is no longer needed
 from . import config, state_manager, database_handler
 
+# FIX: Point static_folder to the correct absolute path and set the URL path.
 app = Flask(__name__,
-            static_folder=config.IMGS_FOLDER_NAME,
+            static_folder=config.IMGS_PATH,
+            static_url_path=f'/{config.IMGS_FOLDER_NAME}',
             template_folder='../templates')
 
 # --- HTML Page Routes ---
@@ -14,9 +18,10 @@ def index():
     return render_template('index.html')
 
 
-@app.route(f'/{config.IMGS_FOLDER_NAME}/<path:filename>')
-def serve_image(filename):
-    return send_from_directory(config.IMGS_PATH, filename)
+# FIX: This manual route is no longer necessary, as Flask now handles it automatically.
+# @app.route(f'/{config.IMGS_FOLDER_NAME}/<path:filename>')
+# def serve_image(filename):
+#     return send_from_directory(config.IMGS_PATH, filename)
 
 # --- API Routes ---
 
@@ -35,10 +40,18 @@ def api_captures():
     try:
         conn = database_handler.get_db_connection()
         conn.row_factory = sqlite3.Row
-        captures = conn.execute(
+        captures_from_db = conn.execute(
             "SELECT * FROM captures ORDER BY timestamp DESC").fetchall()
         conn.close()
-        return jsonify([dict(row) for row in captures])
+
+        captures_list = []
+        for row in captures_from_db:
+            row_dict = dict(row)
+            # This part is still correct: build the full URL path for the frontend.
+            row_dict['image_path'] = f"{config.IMGS_FOLDER_NAME}/{os.path.basename(row_dict['image_path'])}"
+            captures_list.append(row_dict)
+
+        return jsonify(captures_list)
     except sqlite3.Error as e:
         print(f"Database select error: {e}")
         return jsonify({"error": str(e)}), 500
