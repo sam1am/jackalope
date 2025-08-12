@@ -23,8 +23,9 @@ extern uint8_t *framebuffers[IMAGE_BATCH_SIZE];
 extern size_t fb_lengths[IMAGE_BATCH_SIZE];
 extern int image_count;
 
-// FIX: Reverting to the stable sleep function that manages the BLE lifecycle
-// around the sleep cycle, not within the main loop.
+// src/main.cpp
+
+// FIX: Modified sleep function to ensure serial stability before and after sleep
 void enter_light_sleep(int sleep_time_seconds)
 {
   Serial.printf("Entering light sleep for %d seconds.\n", sleep_time_seconds);
@@ -36,11 +37,20 @@ void enter_light_sleep(int sleep_time_seconds)
   // 2. Configure wakeup source
   esp_sleep_enable_timer_wakeup(sleep_time_seconds * 1000000ULL);
 
+  // ADDED: Wait for the serial transmit buffer to empty before sleeping.
+  // This prevents the "BLE Sto..." cutoff issue.
+  Serial.flush();
+
   // 3. Enter light sleep
   esp_light_sleep_start();
 
   // --- WAKE UP ---
-  Serial.println("Woke up from light sleep.");
+
+  // ADDED: A small delay to allow the serial port to stabilize after waking up.
+  // This prevents the garbled text issue.
+  delay(100);
+
+  Serial.println("\nWoke up from light sleep."); // Added a newline for cleaner logs
 
   // 4. Re-initialize peripherals
   display.displayOn();
