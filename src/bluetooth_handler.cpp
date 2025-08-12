@@ -1,6 +1,7 @@
 #include "globals.h"
 #include "display_handler.h"
 #include <BLE2902.h>
+#include <cstring> // Required for strcpy and strtok
 
 // --- Image Buffers ---
 // These are standard global variables, NOT in RTC memory.
@@ -16,48 +17,19 @@ BLECharacteristic *pCommandCharacteristic = NULL;
 BLECharacteristic *pConfigCharacteristic = NULL;
 
 // --- Callback for handling settings changes from the server ---
+// FIX: This callback is now fast and non-blocking. It only copies the data
+// and sets a flag for the main loop to handle the actual processing.
 class ConfigCallbacks : public BLECharacteristicCallbacks
 {
     void onWrite(BLECharacteristic *pCharacteristic)
     {
         std::string value = pCharacteristic->getValue();
-        if (value.length() > 0)
+        // Check length to avoid buffer overflow
+        if (value.length() > 0 && value.length() < sizeof(pending_config_str))
         {
-            Serial.printf("Received new config string: %s\n", value.c_str());
-            // Expected format: "F:10,T:80" (Frequency in seconds, Threshold in percent)
-            const char *str = value.c_str();
-
-            // Parse frequency
-            char *freq_ptr = strstr(str, "F:");
-            if (freq_ptr)
-            {
-                int new_freq = atoi(freq_ptr + 2);
-                if (new_freq > 0)
-                {
-                    deep_sleep_seconds = new_freq;
-                }
-            }
-
-            // Parse threshold
-            char *thresh_ptr = strstr(str, "T:");
-            if (thresh_ptr)
-            {
-                float new_thresh = atof(thresh_ptr + 2);
-                if (new_thresh >= 10 && new_thresh <= 95)
-                {
-                    storage_threshold_percent = new_thresh;
-                }
-            }
-
-            // Save the updated values to non-volatile storage
-            preferences.begin("settings", false); // Open in read-write mode
-            preferences.putInt("sleep_sec", deep_sleep_seconds);
-            preferences.putFloat("storage_pct", storage_threshold_percent);
-            preferences.end();
-
-            Serial.printf("Settings saved: Interval=%ds, Threshold=%.1f%%\n", deep_sleep_seconds, storage_threshold_percent);
-            update_display(4, "Settings Saved!", true);
-            delay(1500); // Show message on display
+            strcpy(pending_config_str, value.c_str());
+            new_config_received = true; // Signal the main loop
+            Serial.printf("Queued new settings for processing: %s\n", value.c_str());
         }
     }
 };
@@ -71,7 +43,7 @@ class CommandCallbacks : public BLECharacteristicCallbacks
         if (value.length() > 0)
         {
             char cmd = value[0];
-            if (cmd != 'N') // Don't spam the log for 'Next' commands
+            if (cmd != 'N')
             {
                 Serial.printf("Received command: %c (0x%02X)\n", cmd, cmd);
             }
@@ -116,28 +88,24 @@ void start_bluetooth()
 
     BLEService *pService = pServer->createService(SERVICE_UUID);
 
-    // Status Characteristic
     pStatusCharacteristic = pService->createCharacteristic(
         CHARACTERISTIC_UUID_STATUS,
         BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
     pStatusCharacteristic->addDescriptor(new BLE2902());
 
-    // Data Characteristic
     pDataCharacteristic = pService->createCharacteristic(
         CHARACTERISTIC_UUID_DATA,
         BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
     pDataCharacteristic->addDescriptor(new BLE2902());
 
-    // Command Characteristic
     pCommandCharacteristic = pService->createCharacteristic(
         CHARACTERISTIC_UUID_COMMAND,
         BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
     pCommandCharacteristic->setCallbacks(new CommandCallbacks());
 
-    // Configuration Characteristic
     pConfigCharacteristic = pService->createCharacteristic(
         CHARACTERISTIC_UUID_CONFIG,
-        BLECharacteristic::PROPERTY_WRITE);
+        BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
     pConfigCharacteristic->setCallbacks(new ConfigCallbacks());
 
     pService->start();
@@ -242,11 +210,7 @@ bool send_single_file_with_flow_control(const uint8_t *buffer, size_t total_size
 void send_batched_data()
 {
     if (!client_connected)
-    {
-        Serial.println("ERROR: send_batched_data called but no client connected");
         return;
-    }
-
     delay(500);
 
     char count_buf[32];
@@ -265,7 +229,6 @@ void send_batched_data()
     }
 
     Serial.println("Server acknowledged batch start. Beginning transfers...");
-
     for (int i = 0; i < image_count; i++)
     {
         if (!client_connected)
@@ -285,9 +248,6 @@ void send_batched_data()
     }
 
     Serial.println("\n=== Batch Transfer Complete ===");
-
-    // Clean up the buffers and reset the image counter for the next round of captures.
-    clear_image_buffers();
-
-    Serial.println("Memory freed and image counter reset.");
+    // FIX: Removed the call to clear_image_buffers() from here.
+    // The main loop is now responsible for memory management.
 }

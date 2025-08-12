@@ -16,7 +16,7 @@ IMGS_FOLDER_NAME = 'imgs'
 IMGS_PATH = os.path.join(ROOT_DIR, IMGS_FOLDER_NAME)
 DB_PATH = os.path.join(ROOT_DIR, 'captures.db')
 
-# --- BLE UUIDS ---
+# --- BLE UUIDs ---
 SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 CHARACTERISTIC_UUID_STATUS = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 CHARACTERISTIC_UUID_DATA = "7347e350-5552-4822-8243-b8923a4114d2"
@@ -37,17 +37,11 @@ server_state = {
 data_queue = None
 device_found_event = None
 found_device = None
-ble_client_instance = None
 pending_config_command = None
 
 
-# --- DATABASE HELPERS (MODIFIED FOR ROBUSTNESS) ---
-
+# --- DATABASE HELPERS ---
 def get_db_connection():
-    """
-    Creates a database connection and ensures the 'captures' table exists.
-    This is the robust way to handle DB connections in the app.
-    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
@@ -64,18 +58,15 @@ def get_db_connection():
 
 
 def setup_filesystem():
-    """Ensures the image directory exists on startup."""
     if not os.path.exists(IMGS_PATH):
         print(f"Image directory not found. Creating at: {IMGS_PATH}")
         os.makedirs(IMGS_PATH)
-    # Also ensure the DB is created on startup, just in case.
     conn = get_db_connection()
     conn.close()
     print("Filesystem and database are ready.")
 
 
 def db_insert_capture(timestamp, image_path):
-    """Inserts a new capture record into the database."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -87,7 +78,7 @@ def db_insert_capture(timestamp, image_path):
         print(f"Database insert error: {e}")
 
 
-# --- BLE LOGIC (Unchanged) ---
+# --- BLE LOGIC ---
 async def transfer_file_data(client, expected_size, buffer, data_type):
     if expected_size == 0:
         return True
@@ -122,7 +113,37 @@ def data_notification_handler(sender, data):
         data_queue.put_nowait(data)
 
 
+async def handle_image_transfer(client, img_size):
+    """
+    Handles the image transfer in a separate, robust task to avoid blocking the main event handler.
+    """
+    try:
+        server_state["status"] = f"Receiving image ({img_size} bytes)..."
+        # Acknowledge the image transfer start
+        await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_ACKNOWLEDGE, response=False)
+        img_buffer = bytearray()
+        if await transfer_file_data(client, img_size, img_buffer, "Image"):
+            timestamp = datetime.datetime.now()
+            filename = timestamp.strftime("%Y-%m-%d_%H-%M-%S-%f") + ".jpg"
+            filepath = os.path.join(IMGS_PATH, filename)
+            with open(filepath, "wb") as f:
+                f.write(img_buffer)
+            db_insert_capture(timestamp.isoformat(),
+                              os.path.join(IMGS_FOLDER_NAME, filename))
+            print(f"-> Saved image to {filepath}")
+            server_state["status"] = f"Image saved: {filename}"
+        else:
+            server_state["status"] = "Image transfer failed"
+    except Exception as e:
+        print(f"\nError during image transfer task: {e}")
+        server_state["status"] = "Image transfer failed due to connection error."
+
+
 async def status_notification_handler(sender, data, client):
+    """
+    Handles incoming status notifications from the device.
+    For long operations like image transfers, it spawns a new task.
+    """
     try:
         status_str = data.decode('utf-8').strip()
         print(f"\n[STATUS] Received: {status_str}")
@@ -143,21 +164,9 @@ async def status_notification_handler(sender, data, client):
 
         elif status_str.startswith("IMAGE:"):
             img_size = int(status_str.split(':')[1])
-            server_state["status"] = f"Receiving image ({img_size} bytes)..."
-            await client.write_gatt_char(CHARACTERISTIC_UUID_COMMAND, CMD_ACKNOWLEDGE, response=False)
-            img_buffer = bytearray()
-            if await transfer_file_data(client, img_size, img_buffer, "Image"):
-                timestamp = datetime.datetime.now()
-                filename = timestamp.strftime("%Y-%m-%d_%H-%M-%S-%f") + ".jpg"
-                filepath = os.path.join(IMGS_PATH, filename)
-                with open(filepath, "wb") as f:
-                    f.write(img_buffer)
-                db_insert_capture(timestamp.isoformat(),
-                                  os.path.join(IMGS_FOLDER_NAME, filename))
-                print(f"-> Saved image to {filepath}")
-                server_state["status"] = f"Image saved: {filename}"
-            else:
-                server_state["status"] = "Image transfer failed"
+            # FIX: Spawn the transfer as a background task so it doesn't block this handler
+            asyncio.create_task(handle_image_transfer(client, img_size))
+
     except Exception as e:
         print(f"Error in status_notification_handler: {e}")
 
@@ -172,7 +181,7 @@ def detection_callback(device, advertising_data):
 
 
 async def ble_communication_task():
-    global found_device, data_queue, device_found_event, ble_client_instance, pending_config_command
+    global found_device, data_queue, device_found_event, pending_config_command
     data_queue = asyncio.Queue()
     device_found_event = asyncio.Event()
 
@@ -196,11 +205,11 @@ async def ble_communication_task():
             server_state["status"] = f"Connecting to {found_device.address}..."
             try:
                 async with BleakClient(found_device, timeout=20.0) as client:
-                    ble_client_instance = client
                     if client.is_connected:
                         server_state["status"] = "Connected. Setting up notifications..."
                         while not data_queue.empty():
                             data_queue.get_nowait()
+
                         status_handler_with_client = functools.partial(
                             status_notification_handler, client=client)
                         await client.start_notify(CHARACTERISTIC_UUID_STATUS, status_handler_with_client)
@@ -208,6 +217,7 @@ async def ble_communication_task():
 
                         server_state["status"] = "Ready. Waiting for device data..."
                         while client.is_connected:
+                            # This loop now runs un-blocked, allowing settings to be sent anytime.
                             if pending_config_command:
                                 print(
                                     f"Sending config command: {pending_config_command}")
@@ -218,7 +228,7 @@ async def ble_communication_task():
                                             pending_config_command, 'utf-8'),
                                         response=False
                                     )
-                                    pending_config_command = None
+                                    pending_config_command = None  # Clear after sending
                                     server_state["status"] = "Settings sent to device."
                                 except Exception as e:
                                     print(f"Failed to send config: {e}")
@@ -230,7 +240,6 @@ async def ble_communication_task():
                 server_state["status"] = "Disconnected. Resuming scan."
                 device_found_event.clear()
                 found_device = None
-                ble_client_instance = None
                 await asyncio.sleep(2)
 
 
@@ -246,9 +255,8 @@ def api_status():
 
 @app.route('/api/captures')
 def api_captures():
-    """API endpoint to get all capture records."""
     try:
-        conn = get_db_connection()  # Use the robust helper
+        conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         captures = conn.execute(
             "SELECT * FROM captures ORDER BY timestamp DESC").fetchall()
@@ -276,10 +284,7 @@ def set_settings():
     server_state["settings"]["threshold"] = thresh
     pending_config_command = f"F:{freq},T:{thresh}"
 
-    if ble_client_instance and ble_client_instance.is_connected:
-        server_state["status"] = "Settings queued for immediate sending..."
-    else:
-        server_state["status"] = "Settings queued. Will send on next connection."
+    server_state["status"] = "Settings queued. Will send on next connection."
     return jsonify({"message": "Settings queued successfully"})
 
 
@@ -293,7 +298,7 @@ def run_flask_app():
 
 
 if __name__ == '__main__':
-    setup_filesystem()  # Renamed for clarity
+    setup_filesystem()
     threading.Thread(target=run_flask_app, daemon=True).start()
     time.sleep(1)
     try:

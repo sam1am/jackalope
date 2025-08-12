@@ -8,14 +8,16 @@ Preferences preferences;
 
 // Configuration settings with defaults
 int deep_sleep_seconds = 5;
-float storage_threshold_percent = 0.4;
+float storage_threshold_percent = 5.0;
 
 // Global state flags
 volatile bool client_connected = false;
 volatile bool next_chunk_requested = false;
 volatile bool transfer_acknowledged = false;
+volatile bool new_config_received = false; // FIX: Flag to signal new settings
+char pending_config_str[64];               // FIX: Buffer for settings string
 
-// Forward declaration from bluetooth_handler.cpp
+// Forward declaration from bluetooth_handler.cpp, where these are defined
 extern uint8_t *framebuffers[IMAGE_BATCH_SIZE];
 extern size_t fb_lengths[IMAGE_BATCH_SIZE];
 extern int image_count;
@@ -74,6 +76,52 @@ void load_settings()
                 deep_sleep_seconds, storage_threshold_percent);
 }
 
+// FIX: New function to safely process settings from the main loop
+void apply_new_settings()
+{
+  Serial.printf("Applying new settings from main loop: %s\n", pending_config_str);
+
+  // Create a mutable copy for strtok
+  char buffer[sizeof(pending_config_str)];
+  strcpy(buffer, pending_config_str);
+
+  // Tokenize the string by the comma delimiter
+  char *token = strtok(buffer, ",");
+  while (token != NULL)
+  {
+    if (token[0] == 'F')
+    {
+      int new_freq = atoi(token + 2); // Skip "F:"
+      if (new_freq > 0)
+      {
+        deep_sleep_seconds = new_freq;
+      }
+    }
+    else if (token[0] == 'T')
+    {
+      float new_thresh = atof(token + 2); // Skip "T:"
+      if (new_thresh >= 10 && new_thresh <= 95)
+      {
+        storage_threshold_percent = new_thresh;
+      }
+    }
+    token = strtok(NULL, ",");
+  }
+
+  // Save the updated values to non-volatile storage for persistence
+  preferences.begin("settings", false);
+  preferences.putInt("sleep_sec", deep_sleep_seconds);
+  preferences.putFloat("storage_pct", storage_threshold_percent);
+  preferences.end();
+
+  Serial.printf("Settings saved and applied: Interval=%ds, Threshold=%.1f%%\n", deep_sleep_seconds, storage_threshold_percent);
+  update_display(4, "Settings Saved!", true);
+  delay(1500);
+  update_display(4, "", true); // Clear the message
+
+  new_config_received = false; // Reset the flag
+}
+
 // --- SETUP: Runs once at power-on ---
 void setup()
 {
@@ -89,14 +137,20 @@ void setup()
   Serial.println("System initialized and running. Waiting for first capture interval.");
 }
 
-// --- LOOP: Main program cycle (Corrected Logic) ---
+// --- LOOP: Main program cycle ---
 void loop()
 {
-  // 1. Wait for the specified interval.
+  // 0. Check if there are new settings to apply.
+  if (new_config_received)
+  {
+    apply_new_settings();
+  }
+
+  // 1. Wait for the specified interval. This uses the global variable that can be changed on-the-fly.
   Serial.printf("Waiting for %d seconds...\n", deep_sleep_seconds);
   delay(deep_sleep_seconds * 1000);
 
-  // 2. Capture an image. This now happens even if a client is connected.
+  // 2. Capture an image.
   Serial.println("Capture interval elapsed. Taking picture...");
   if (!store_image_in_psram())
   {
@@ -127,16 +181,17 @@ void loop()
   {
     Serial.printf("Transfer condition met (Usage: %.1f%%, Count: %d).\n", used_percentage, image_count);
 
-    // If a client is already connected, we can start the transfer immediately.
+    bool transfer_attempted = false;
+
     if (client_connected)
     {
       Serial.println("Client is already connected. Starting transfer.");
       update_display(2, "Connected! Sending...", true);
       send_batched_data();
+      transfer_attempted = true;
     }
     else
     {
-      // Otherwise, wait for a new connection for a limited time.
       Serial.println("Waiting for a client to connect for transfer...");
       update_display(2, "Batch full. Wait conn.", true);
 
@@ -156,9 +211,15 @@ void loop()
       {
         Serial.println("No client connected within timeout. Discarding data to continue.");
         update_display(2, "No connection. Clearing.", true);
-        clear_image_buffers(); // Free up space to continue timelapse
       }
+      transfer_attempted = true;
     }
+
+    if (transfer_attempted)
+    {
+      clear_image_buffers();
+    }
+
     update_display(2, "", true); // Clear the status line after the attempt
   }
 }

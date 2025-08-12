@@ -8,7 +8,7 @@
 #include <Preferences.h>
 
 // --- PROTOCOL & BATCH CONFIGURATION ---
-#define CHUNK_SIZE 512      // The missing definition
+#define CHUNK_SIZE 512
 #define IMAGE_BATCH_SIZE 20 // Maximum number of images we can buffer in PSRAM
 #ifndef BLE_DEVICE_NAME
 #define BLE_DEVICE_NAME "T-Camera-BLE-Batch"
@@ -54,7 +54,9 @@ extern BLECharacteristic *pStatusCharacteristic;
 extern volatile bool client_connected;
 extern volatile bool next_chunk_requested;
 extern volatile bool transfer_acknowledged;
+extern volatile bool new_config_received; // FIX: Flag for main loop to process settings
 extern int image_count;
+extern char pending_config_str[64]; // FIX: Buffer to hold incoming settings
 
 // --- FUNCTION PROTOTYPES ---
 void init_display();
@@ -65,6 +67,7 @@ void start_bluetooth();
 void send_batched_data();
 bool store_image_in_psram();
 void load_settings();
+void apply_new_settings(); // FIX: New function to safely apply settings
 void clear_image_buffers();
 
 #endif // GLOBALS_H
