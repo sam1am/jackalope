@@ -23,22 +23,20 @@ extern uint8_t *framebuffers[IMAGE_BATCH_SIZE];
 extern size_t fb_lengths[IMAGE_BATCH_SIZE];
 extern int image_count;
 
-// src/main.cpp
-
-// FIX: Modified sleep function to ensure serial stability before and after sleep
+// FIX: Stable sleep function with added serial synchronization.
 void enter_light_sleep(int sleep_time_seconds)
 {
   Serial.printf("Entering light sleep for %d seconds.\n", sleep_time_seconds);
 
   // 1. Power down peripherals
   stop_bluetooth();
-  display.displayOff(); // Turning off display also powers down camera on this board
+  display.displayOff();
+  delay(100);
 
   // 2. Configure wakeup source
   esp_sleep_enable_timer_wakeup(sleep_time_seconds * 1000000ULL);
 
-  // ADDED: Wait for the serial transmit buffer to empty before sleeping.
-  // This prevents the "BLE Sto..." cutoff issue.
+  // FIX: Wait for the serial buffer to empty before sleeping to prevent cutoff messages.
   Serial.flush();
 
   // 3. Enter light sleep
@@ -46,16 +44,15 @@ void enter_light_sleep(int sleep_time_seconds)
 
   // --- WAKE UP ---
 
-  // ADDED: A small delay to allow the serial port to stabilize after waking up.
-  // This prevents the garbled text issue.
+  // FIX: Short delay to allow serial port hardware to stabilize after waking up.
   delay(100);
 
-  Serial.println("\nWoke up from light sleep."); // Added a newline for cleaner logs
+  Serial.println("\nWoke up from light sleep."); // Added newline for cleaner logs
 
   // 4. Re-initialize peripherals
   display.displayOn();
   init_display();
-  start_bluetooth(); // Restart BLE to be ready for connections/commands
+  // start_bluetooth();
   update_display(0, "System Ready", true);
 }
 
@@ -113,7 +110,6 @@ void load_settings()
                 deep_sleep_seconds, storage_threshold_percent);
 }
 
-// FIX: This function now works again because BLE is active during the loop.
 void apply_new_settings()
 {
   Serial.printf("Applying new settings: '%s'\n", pending_config_str);
@@ -160,6 +156,9 @@ void setup()
   Serial.println("\n--- T-Camera Continuous Timelapse (Low Power) ---");
 
   setCpuFrequencyMhz(80);
+  // FIX: Re-initialize Serial after changing CPU frequency to match the new clock speed.
+  Serial.end();
+  Serial.begin(115200);
   Serial.printf("CPU Freq set to %d MHz\n", getCpuFrequencyMhz());
 
   init_display();
@@ -183,6 +182,8 @@ void loop()
   enter_light_sleep(deep_sleep_seconds);
 
   setCpuFrequencyMhz(240);
+  Serial.end();
+  Serial.begin(115200);
   Serial.printf("CPU Freq set to %d MHz for capture\n", getCpuFrequencyMhz());
 
   Serial.println("Capture interval elapsed. Taking picture...");
@@ -192,6 +193,8 @@ void loop()
   }
 
   setCpuFrequencyMhz(80);
+  Serial.end();
+  Serial.begin(115200);
   Serial.printf("CPU Freq returned to %d MHz\n", getCpuFrequencyMhz());
 
   size_t total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
@@ -213,7 +216,11 @@ void loop()
 
   if (should_transfer)
   {
+    start_bluetooth();
+    delay(200);
     setCpuFrequencyMhz(240);
+    Serial.end();
+    Serial.begin(115200);
     Serial.printf("CPU Freq boosted to %d MHz for transfer\n", getCpuFrequencyMhz());
 
     Serial.printf("Transfer condition met (Usage: %.1f%%, Count: %d).\n", used_percentage, image_count);
@@ -223,7 +230,7 @@ void loop()
     {
       Serial.println("Client is already connected. Starting transfer.");
       update_display(2, "Connected! Sending...", true);
-      delay(500); // Wait for server to be ready before sending data
+      delay(500);
       send_batched_data();
       transfer_attempted = true;
     }
@@ -240,7 +247,7 @@ void loop()
       {
         Serial.println("Client connected for transfer.");
         update_display(2, "Connected! Sending...", true);
-        delay(500); // Wait for server to be ready before sending data
+        delay(500);
         send_batched_data();
       }
       else
@@ -261,6 +268,9 @@ void loop()
     update_display(2, "", true);
 
     setCpuFrequencyMhz(80);
+    // FIX: Re-initialize Serial port after transfer is complete.
+    Serial.end();
+    Serial.begin(115200);
     Serial.printf("CPU Freq returned to %d MHz\n", getCpuFrequencyMhz());
   }
 }
