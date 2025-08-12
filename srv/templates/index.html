@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SamCam Live View</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            text-align: center;
+            background-color: #282c34;
+            color: white;
+            margin: 0;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #61dafb;
+        }
+
+        #image-container {
+            margin-top: 20px;
+            margin-bottom: 20px;
+            min-height: 480px;
+            /* VGA Height */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        img {
+            max-width: 95%;
+            max-height: 80vh;
+            border: 3px solid #61dafb;
+            border-radius: 8px;
+            background-color: #3c4049;
+        }
+
+        #status-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            background-color: #20232a;
+            color: #ffffff;
+            padding: 8px 0;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>SamCam Live View</h1>
+    <p>Image should update automatically. Use the button on the ESP32 to change modes.</p>
+
+    <div id="image-container">
+        <img id="stream" src="{{ url_for('latest_image') }}" alt="Live Stream - Waiting for image...">
+    </div>
+
+    <div id="status-bar">
+        Server Status: <span id="status">{{ status }}</span>
+    </div>
+
+    <script>
+        // This function forces the browser to re-request the image, bypassing the cache.
+        // The timestamp parameter is ignored by the server but makes the URL unique for the browser.
+        setInterval(function () {
+            const imageElement = document.getElementById('stream');
+            imageElement.src = "{{ url_for('latest_image') }}?timestamp=" + new Date().getTime();
+        }, 1000); // Refresh every 1 second
+    </script>
+
+</body>
+
+</html>
