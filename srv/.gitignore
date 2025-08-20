@@ -3,3 +3,4 @@ imgs/*
 captures.db
 static/latest.jpg
 __pycache__/
+srv/app/__pycache__/
