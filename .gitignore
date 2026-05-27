@@ -2,6 +2,3 @@
 .DS_Store
 .summary_files/
 srv/imgs/*
-temp_auto_push.bat
-temp_interactive_push.bat
-.gitignore
